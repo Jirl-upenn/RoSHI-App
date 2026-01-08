@@ -474,6 +474,9 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     }
     
     private func startRecordingImmediately() {
+        // Send start recording signal to receiver immediately (for IMU data)
+        fileTransferService.sendStartRecordingSignal()
+        
         let resolution = CGSize(width: videoW, height: videoH)
         videoRecorder.startRecording(resolution: resolution)
         DispatchQueue.main.async {

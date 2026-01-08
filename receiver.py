@@ -117,13 +117,26 @@ class ROSHIReceiver:
             print(f"  Waiting for data from {address[0]}...")
             
             while True:
-                # Receive file type (1 byte)
-                file_type_data = self._recv_exact(client_socket, 1)
-                if not file_type_data:
+                # Receive first byte to determine if it's a control signal or file type
+                first_byte_data = self._recv_exact(client_socket, 1)
+                if not first_byte_data:
                     print("  No more data, closing connection")
                     break
                 
-                file_type = file_type_data[0]
+                first_byte = first_byte_data[0]
+                
+                # Check if it's a control signal
+                if first_byte == 2:
+                    print("  📡 Control Signal: START_IMU_RECORDING (signal 2)")
+                    # Continue to next message
+                    continue
+                elif first_byte == 3:
+                    print("  📡 Control Signal: STOP_IMU_RECORDING (signal 3)")
+                    # Continue to next message
+                    continue
+                
+                # Otherwise, it's a file type (0 = video, 1 = metadata)
+                file_type = first_byte
                 file_type_name = "video" if file_type == 0 else "metadata"
                 print(f"  Receiving {file_type_name} file...")
                 

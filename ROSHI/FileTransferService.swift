@@ -27,6 +27,7 @@ class FileTransferService {
     private let connectionCheckInterval: TimeInterval = 3.0 // Check every 3 seconds
     private var connectionStartTime: Date?
     private let connectionTimeout: TimeInterval = 5.0 // Timeout after 5 seconds of trying
+    private var imuStartSignalSent: Bool = false // Track if start signal has been sent in this session
     
     // Direct connection
     var receiverHost: String = ""
@@ -41,11 +42,14 @@ class FileTransferService {
     }
     
     // Simple protocol:
-    // 1. Send file type (1 byte: 0=video, 1=metadata)
-    // 2. Send filename length (4 bytes, big-endian)
-    // 3. Send filename (UTF-8)
-    // 4. Send file size (8 bytes, big-endian)
-    // 5. Send file data
+    // Control signals (1 byte):
+    //   2 = start IMU recording (IMU continues recording until manually stopped)
+    // File transfer:
+    //   1. Send file type (1 byte: 0=video, 1=metadata)
+    //   2. Send filename length (4 bytes, big-endian)
+    //   3. Send filename (UTF-8)
+    //   4. Send file size (8 bytes, big-endian)
+    //   5. Send file data
     
     private func connect(to endpoint: NWEndpoint) {
         // Cancel existing connection if any
@@ -97,6 +101,10 @@ class FileTransferService {
             // Notify delegate of connection state change
             if self.isConnected != newConnectedState {
                 self.isConnected = newConnectedState
+                // Reset IMU start signal flag when connection is lost
+                if !newConnectedState {
+                    self.imuStartSignalSent = false
+                }
                 DispatchQueue.main.async {
                     self.delegate?.connectionStateChanged(newConnectedState)
                 }
@@ -111,6 +119,43 @@ class FileTransferService {
         connect(to: endpoint)
     }
     
+    // Send control signal to receiver (for IMU recording start)
+    func sendControlSignal(_ signal: UInt8) {
+        guard let conn = connection, conn.state == .ready else {
+            print("⚠ Cannot send control signal: connection not ready")
+            return
+        }
+        
+        let signalData = Data([signal])
+        print("📡 Sending control signal: START_IMU_RECORDING")
+        
+        // Send immediately on the transfer queue for minimal delay
+        transferQueue.async {
+            conn.send(content: signalData, completion: .contentProcessed { error in
+                if let error = error {
+                    print("✗ Control signal send error: \(error)")
+                } else {
+                    print("✓ Control signal sent successfully")
+                }
+            })
+        }
+    }
+    
+    func sendStartRecordingSignal() {
+        // Only send the signal once per connection session
+        guard !imuStartSignalSent else {
+            print("📡 IMU start signal already sent in this session, skipping...")
+            return
+        }
+        
+        sendControlSignal(2) // 2 = start IMU recording
+        imuStartSignalSent = true
+    }
+    
+    func sendStopRecordingSignal() {
+        sendControlSignal(3) // 3 = stop IMU recording
+    }
+    
     func setReceiver(host: String, port: UInt16) {
         receiverHost = host
         receiverPort = port
@@ -118,6 +163,8 @@ class FileTransferService {
         connection?.cancel()
         connection = nil
         isConnected = false
+        // Reset IMU start signal flag when receiver is changed
+        imuStartSignalSent = false
         DispatchQueue.main.async {
             self.delegate?.connectionStateChanged(false)
         }
