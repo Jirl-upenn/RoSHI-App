@@ -11,15 +11,15 @@ class CameraManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera.queue")
     
-    var isFront = false
-    private var currentPosition: AVCaptureDevice.Position = .back
+    var isFront = true
+    private var currentPosition: AVCaptureDevice.Position = .front
     
     // Settings State
-    var currentResolution: AVCaptureSession.Preset = .hd1920x1080
+    var currentResolution: AVCaptureSession.Preset = .hd1280x720
     var currentFPS: Double = 30.0
     
-    // Dimensions for UI (Default 1080p Portrait)
-    var videoDimensions: CGSize = CGSize(width: 1080, height: 1920)
+    // Dimensions for UI (Default 720p Portrait)
+    var videoDimensions: CGSize = CGSize(width: 720, height: 1280)
     
     weak var delegate: CameraManagerDelegate?
     

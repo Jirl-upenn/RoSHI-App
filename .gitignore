@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+*.xcuserstate
+*.xcuserdatad
+xcuserdata/
+*.xcworkspace/xcuserdata/
+build/
+DerivedData/
+
+# Video files and recordings (data files, not source code)
+*.mp4
+*.mov
+received_recordings/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

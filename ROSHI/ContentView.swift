@@ -10,7 +10,7 @@ struct ContentView: View {
     @State private var zoomLevel: CGFloat = 1.0
     
     // UI State for buttons
-    @State private var resLabel: String = "1080p"
+    @State private var resLabel: String = "720p"
     @State private var fpsLabel: String = "30 FPS"
     
     var body: some View {
@@ -145,6 +145,25 @@ struct ContentView: View {
                     
                     Spacer()
                     
+                    // Receiver Status Indicator
+                    Button(action: {
+                        model.showReceiverSettings = true
+                    }) {
+                        HStack(spacing: 6) {
+                            // Connection Status Dot
+                            Circle()
+                                .fill(model.isReceiverConnected ? Color.green : Color.red)
+                                .frame(width: 10, height: 10)
+                            
+                            Image(systemName: "network")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                        .padding(8)
+                        .background(Color.black.opacity(0.5))
+                        .cornerRadius(8)
+                    }
+                    
                     // Actual FPS Readout
                     Text(String(format: "FPS: %.0f", model.fps))
                         .font(.system(size: 20, weight: .bold, design: .monospaced))
@@ -173,40 +192,195 @@ struct ContentView: View {
                 .padding(.horizontal, 40)
                 .padding(.bottom, 10)
                 
-                Button(action: { model.switchCamera() }) {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
-                        .font(.title)
-                        .frame(width: 60, height: 60)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                        .foregroundColor(.white)
+                ZStack {
+                    // Record Button (Centered)
+                    Button(action: {
+                        if model.isRecording {
+                            model.stopRecording()
+                        } else {
+                            model.startRecording()
+                        }
+                    }) {
+                        ZStack {
+                            Circle()
+                                .fill(model.isRecording ? Color.red : Color.white)
+                                .frame(width: 70, height: 70)
+                            if model.isRecording {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.white)
+                                    .frame(width: 24, height: 24)
+                            } else {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 60, height: 60)
+                            }
+                        }
+                    }
+                    
+                    // Camera Flip Button (Right side)
+                    HStack {
+                        Spacer()
+                        Button(action: { model.switchCamera() }) {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
+                                .font(.title)
+                                .frame(width: 60, height: 60)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .padding(.horizontal, 40)
                 }
                 .padding(.bottom, 40)
             }
         }
         .onAppear { model.cameraManager.start() }
+        .sheet(isPresented: $model.showReceiverSettings) {
+            ReceiverSettingsView(model: model)
+        }
+    }
+}
+
+// MARK: - Receiver Settings View
+struct ReceiverSettingsView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var hostText: String = ""
+    @State private var portText: String = "50000"
+    @State private var showDetails: Bool = false
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    HStack {
+                        Circle()
+                            .fill(model.isReceiverConnected ? Color.green : Color.red)
+                            .frame(width: 12, height: 12)
+                        Text(model.isReceiverConnected ? "Connected" : "Disconnected")
+                            .foregroundColor(model.isReceiverConnected ? .green : .red)
+                    }
+                } header: {
+                    Text("Connection Status")
+                }
+                
+                Section(header: Text("Receiver Address")) {
+                    Button(action: {
+                        showDetails.toggle()
+                    }) {
+                        HStack {
+                            Text("Current Address")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if showDetails {
+                                Text(model.receiverAddress)
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Image(systemName: "eye.slash")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    
+                    if showDetails {
+                        HStack {
+                            Text("IP Address")
+                            Spacer()
+                            TextField("e.g., 10.103.120.254", text: $hostText)
+                                .keyboardType(.numbersAndPunctuation)
+                                .autocapitalization(.none)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        
+                        HStack {
+                            Text("Port")
+                            Spacer()
+                            TextField("50000", text: $portText)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Receiver")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+                if showDetails {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Save") {
+                            saveSettings()
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                // Load current settings
+                let parts = model.receiverAddress.split(separator: ":")
+                if parts.count == 2 {
+                    hostText = String(parts[0])
+                    portText = String(parts[1])
+                }
+            }
+        }
+    }
+    
+    private func saveSettings() {
+        guard let port = UInt16(portText), !hostText.isEmpty else {
+            return
+        }
+        model.updateReceiver(host: hostText, port: port)
+        dismiss()
     }
 }
 
 // MARK: - AppModel
-class AppModel: ObservableObject, CameraManagerDelegate {
+class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDelegate {
     let cameraManager = CameraManager()
     let detector = AprilTagDetector()
+    let videoRecorder = VideoRecorder()
+    let fileTransferService = FileTransferService()
     
     @Published var detectedTags: [AprilTag3D] = []
-    @Published var isFront: Bool = false
+    @Published var isFront: Bool = true
     @Published var fps: Double = 0
+    @Published var isRecording: Bool = false
+    @Published var transferProgress: Double = 0.0
+    @Published var isTransferring: Bool = false
+    @Published var isReceiverConnected: Bool = false
+    @Published var showReceiverSettings: Bool = false
+    
+    var receiverAddress: String {
+        return fileTransferService.receiverAddress
+    }
     
     // Video Dimensions
-    @Published var videoW: CGFloat = 1080
-    @Published var videoH: CGFloat = 1920
+    @Published var videoW: CGFloat = 720
+    @Published var videoH: CGFloat = 1280
     
     // FPS Calc
     private var frameCount = 0
     private var lastTime: TimeInterval = 0
     let tagSizeMeters = 0.05
     
-    init() { cameraManager.delegate = self }
+    init() {
+        cameraManager.delegate = self
+        fileTransferService.delegate = self
+        // Initialize to 720p
+        cameraManager.setResolution(.hd1280x720)
+        DispatchQueue.main.async {
+            self.videoW = self.cameraManager.videoDimensions.width
+            self.videoH = self.cameraManager.videoDimensions.height
+        }
+        // Set receiver IP and port (update with your receiver's IP)
+        // Default port is 50000, or use --port when starting receiver.py
+        fileTransferService.setReceiver(host: "10.103.120.254", port: 50000)
+    }
     
     func switchCamera() {
         cameraManager.switchCameraPos()
@@ -223,6 +397,66 @@ class AppModel: ObservableObject, CameraManagerDelegate {
             self.videoW = self.cameraManager.videoDimensions.width
             self.videoH = self.cameraManager.videoDimensions.height
         }
+    }
+    
+    func startRecording() {
+        let resolution = CGSize(width: videoW, height: videoH)
+        videoRecorder.startRecording(resolution: resolution)
+        DispatchQueue.main.async {
+            self.isRecording = true
+        }
+    }
+    
+    func stopRecording() {
+        videoRecorder.stopRecording { [weak self] videoURL, metadataURL in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.isRecording = false
+            }
+            
+            if let videoURL = videoURL, let metadataURL = metadataURL {
+                print("Recording saved, starting transfer...")
+                DispatchQueue.main.async {
+                    self.isTransferring = true
+                    self.transferProgress = 0.0
+                }
+                // Transfer files immediately
+                self.fileTransferService.sendFiles(videoURL: videoURL, metadataURL: metadataURL)
+            }
+        }
+    }
+    
+    // MARK: - FileTransferServiceDelegate
+    
+    func transferProgress(_ progress: Double) {
+        DispatchQueue.main.async {
+            self.transferProgress = progress
+        }
+    }
+    
+    func transferCompleted() {
+        DispatchQueue.main.async {
+            self.isTransferring = false
+            self.transferProgress = 1.0
+            print("Transfer completed, files deleted")
+        }
+    }
+    
+    func transferFailed(_ error: Error) {
+        DispatchQueue.main.async {
+            self.isTransferring = false
+            print("Transfer failed: \(error.localizedDescription)")
+        }
+    }
+    
+    func connectionStateChanged(_ isConnected: Bool) {
+        DispatchQueue.main.async {
+            self.isReceiverConnected = isConnected
+        }
+    }
+    
+    func updateReceiver(host: String, port: UInt16) {
+        fileTransferService.setReceiver(host: host, port: port)
     }
     
     func didOutput(sampleBuffer: CMSampleBuffer) {
@@ -247,6 +481,11 @@ class AppModel: ObservableObject, CameraManagerDelegate {
         
         let tags = detector.detect(pixelBuffer: pixelBuffer, tagSizeMeters: tagSizeMeters, intrinsics: intrinsics)
         DispatchQueue.main.async { self.detectedTags = tags }
+        
+        // Record frame if recording
+        if videoRecorder.recording {
+            videoRecorder.appendFrame(pixelBuffer: pixelBuffer, sampleBuffer: sampleBuffer, detections: tags, intrinsics: intrinsics)
+        }
     }
 }
 
