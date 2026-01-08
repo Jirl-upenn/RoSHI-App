@@ -2,11 +2,22 @@ import AVFoundation
 import Foundation
 import CoreImage
 
+struct RecordingMetadata: Codable {
+    let resolution: Resolution
+    let fps: Double
+    let cameraIntrinsics: CodableMatrix3x3?
+    let frames: [FrameMetadata]
+}
+
+struct Resolution: Codable {
+    let width: Int
+    let height: Int
+}
+
 struct FrameMetadata: Codable {
     let frameIndex: Int
     let utcTimestamp: String  // ISO 8601 format
     let timestampSeconds: Double
-    let cameraIntrinsics: CodableMatrix3x3?
     let detections: [TagDetection]
 }
 
@@ -49,13 +60,18 @@ class VideoRecorder {
     private let targetFPS: Double = 30.0
     private let frameInterval: CMTime
     private let ciContext: CIContext
+    private var recordingResolution: CGSize?
+    private var recordingFPS: Double = 30.0
+    private var recordingIntrinsics: CodableMatrix3x3?
+    private var stopTime: Date?
+    private let trimDuration: TimeInterval = 3.0 // Remove last 3 seconds
     
     init() {
         frameInterval = CMTime(value: 1, timescale: CMTimeScale(targetFPS))
         ciContext = CIContext(options: [.useSoftwareRenderer: false])
     }
     
-    func startRecording(resolution: CGSize) {
+    func startRecording(resolution: CGSize, fps: Double = 30.0) {
         recordingQueue.async(flags: .barrier) {
             guard !self._isRecording else { return }
             
@@ -105,6 +121,9 @@ class VideoRecorder {
                 self.startTime = Date()
                 self.metadata = []
                 self.lastFrameTime = CMTime.zero
+                self.recordingResolution = resolution
+                self.recordingFPS = fps
+                self.recordingIntrinsics = nil // Will be set on first frame
                 
                 print("Recording started: \(videoURL.path)")
                 print("Metadata will be saved to: \(metadataURL.path)")
@@ -177,12 +196,12 @@ class VideoRecorder {
                     )
                 }
                 
-                // Convert intrinsics to codable format
-                let codableIntrinsics: CodableMatrix3x3? = intrinsics.map { k in
-                    CodableMatrix3x3(
-                        m11: k.columns.0.x, m12: k.columns.1.x, m13: k.columns.2.x,
-                        m21: k.columns.0.y, m22: k.columns.1.y, m23: k.columns.2.y,
-                        m31: k.columns.0.z, m32: k.columns.1.z, m33: k.columns.2.z
+                // Store intrinsics only once (on first frame)
+                if self.recordingIntrinsics == nil, let intrinsics = intrinsics {
+                    self.recordingIntrinsics = CodableMatrix3x3(
+                        m11: intrinsics.columns.0.x, m12: intrinsics.columns.1.x, m13: intrinsics.columns.2.x,
+                        m21: intrinsics.columns.0.y, m22: intrinsics.columns.1.y, m23: intrinsics.columns.2.y,
+                        m31: intrinsics.columns.0.z, m32: intrinsics.columns.1.z, m33: intrinsics.columns.2.z
                     )
                 }
                 
@@ -190,7 +209,6 @@ class VideoRecorder {
                     frameIndex: self.frameIndex,
                     utcTimestamp: isoFormatter.string(from: utcTime),
                     timestampSeconds: timestamp,
-                    cameraIntrinsics: codableIntrinsics,
                     detections: tagDetections
                 )
                 
@@ -207,6 +225,10 @@ class VideoRecorder {
                 return
             }
             
+            // Record stop time and calculate cutoff (3 seconds before stop)
+            self.stopTime = Date()
+            let cutoffTime = (self.stopTime?.timeIntervalSince1970 ?? 0) - self.trimDuration
+            
             self._isRecording = false
             
             guard let writer = self.assetWriter,
@@ -218,27 +240,102 @@ class VideoRecorder {
             input.markAsFinished()
             
             writer.finishWriting {
-                let videoURL = writer.outputURL
+                let originalVideoURL = writer.outputURL
                 
-                // Save metadata
+                // Filter metadata to remove last 3 seconds
+                let filteredMetadata = self.metadata.filter { frame in
+                    frame.timestampSeconds < cutoffTime
+                }
+                
+                print("Original frames: \(self.metadata.count), After trimming last 3 seconds: \(filteredMetadata.count)")
+                
+                // Create temporary file for trimmed video
                 let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let timestamp = ISO8601DateFormatter().string(from: self.startTime ?? Date())
                     .replacingOccurrences(of: ":", with: "-")
-                let metadataURL = documentsPath.appendingPathComponent("recording_\(timestamp)_metadata.json")
+                let tempVideoURL = documentsPath.appendingPathComponent("recording_\(timestamp)_temp.mp4")
                 
-                do {
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    let jsonData = try encoder.encode(self.metadata)
-                    try jsonData.write(to: metadataURL)
-                    print("Metadata saved to: \(metadataURL.path)")
-                } catch {
-                    print("Failed to save metadata: \(error)")
+                // Trim video file to remove last 3 seconds
+                self.trimVideo(inputURL: originalVideoURL, outputURL: tempVideoURL, trimDuration: self.trimDuration) { trimmedURL in
+                    // Replace original with trimmed version
+                    if let trimmedURL = trimmedURL {
+                        try? FileManager.default.removeItem(at: originalVideoURL)
+                        try? FileManager.default.moveItem(at: trimmedURL, to: originalVideoURL)
+                    }
+                    let finalVideoURL = originalVideoURL
+                    
+                    // Save metadata with recording info (filtered)
+                    let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    let timestamp = ISO8601DateFormatter().string(from: self.startTime ?? Date())
+                        .replacingOccurrences(of: ":", with: "-")
+                    let metadataURL = documentsPath.appendingPathComponent("recording_\(timestamp)_metadata.json")
+                    
+                    do {
+                        let resolution = Resolution(
+                            width: Int(self.recordingResolution?.width ?? 0),
+                            height: Int(self.recordingResolution?.height ?? 0)
+                        )
+                        
+                        let recordingMetadata = RecordingMetadata(
+                            resolution: resolution,
+                            fps: self.recordingFPS,
+                            cameraIntrinsics: self.recordingIntrinsics,
+                            frames: filteredMetadata
+                        )
+                        
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                        let jsonData = try encoder.encode(recordingMetadata)
+                        try jsonData.write(to: metadataURL)
+                        print("Metadata saved to: \(metadataURL.path)")
+                    } catch {
+                        print("Failed to save metadata: \(error)")
+                    }
+                    
+                    DispatchQueue.main.async {
+                        completion(finalVideoURL, metadataURL)
+                    }
                 }
-                
-                DispatchQueue.main.async {
-                    completion(videoURL, metadataURL)
-                }
+            }
+        }
+    }
+    
+    private func trimVideo(inputURL: URL, outputURL: URL, trimDuration: TimeInterval, completion: @escaping (URL?) -> Void) {
+        let asset = AVAsset(url: inputURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            print("Failed to create export session")
+            completion(nil)
+            return
+        }
+        
+        // Calculate new duration (original - trim duration)
+        let duration = asset.duration.seconds
+        let newDuration = max(0, duration - trimDuration)
+        
+        if newDuration <= 0 {
+            print("Video too short to trim")
+            completion(nil)
+            return
+        }
+        
+        let startTime = CMTime.zero
+        let endTime = CMTime(seconds: newDuration, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: startTime, end: endTime)
+        
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.timeRange = timeRange
+        
+        exportSession.exportAsynchronously {
+            switch exportSession.status {
+            case .completed:
+                print("Video trimmed successfully")
+                completion(outputURL)
+            case .failed, .cancelled:
+                print("Video trim failed: \(exportSession.error?.localizedDescription ?? "unknown error")")
+                completion(nil)
+            default:
+                completion(nil)
             }
         }
     }

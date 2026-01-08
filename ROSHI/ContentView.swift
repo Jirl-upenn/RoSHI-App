@@ -306,7 +306,7 @@ struct ReceiverSettingsView: View {
                         HStack {
                             Text("IP Address")
                             Spacer()
-                            TextField("e.g., 10.103.120.254", text: $hostText)
+                            TextField("e.g., 10.103.76.0", text: $hostText)
                                 .keyboardType(.numbersAndPunctuation)
                                 .autocapitalization(.none)
                                 .multilineTextAlignment(.trailing)
@@ -405,7 +405,7 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         }
         // Set receiver IP and port (update with your receiver's IP)
         // Default port is 50000, or use --port when starting receiver.py
-        fileTransferService.setReceiver(host: "10.103.120.254", port: 50000)
+        fileTransferService.setReceiver(host: "10.103.76.0", port: 50000)
     }
     
     func switchCamera() {
@@ -478,13 +478,17 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         fileTransferService.sendStartRecordingSignal()
         
         let resolution = CGSize(width: videoW, height: videoH)
-        videoRecorder.startRecording(resolution: resolution)
+        let currentFPS = cameraManager.currentFPS
+        videoRecorder.startRecording(resolution: resolution, fps: currentFPS)
         DispatchQueue.main.async {
             self.isRecording = true
         }
     }
     
     func stopRecording() {
+        // Send stop recording signal to receiver (for IMU data)
+        fileTransferService.sendStopRecordingSignal()
+        
         // Cancel countdown if active
         countdownTimer?.invalidate()
         countdownTimer = nil
