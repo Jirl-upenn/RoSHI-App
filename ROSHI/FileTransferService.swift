@@ -23,6 +23,10 @@ class FileTransferService {
     private var sendAttempts = 0
     private let maxSendAttempts = 10
     private var isConnected = false
+    private var connectionCheckTimer: Timer?
+    private let connectionCheckInterval: TimeInterval = 3.0 // Check every 3 seconds
+    private var connectionStartTime: Date?
+    private let connectionTimeout: TimeInterval = 5.0 // Timeout after 5 seconds of trying
     
     // Direct connection
     var receiverHost: String = ""
@@ -46,10 +50,12 @@ class FileTransferService {
     private func connect(to endpoint: NWEndpoint) {
         // Cancel existing connection if any
         connection?.cancel()
+        connection = nil
         
         let parameters = NWParameters.tcp
         
         connection = NWConnection(to: endpoint, using: parameters)
+        connectionStartTime = Date()
         
         connection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -60,16 +66,29 @@ class FileTransferService {
                 print("Connection setting up...")
             case .waiting(let error):
                 print("Connection waiting: \(error)")
+                // Check if we've been waiting too long
+                if let startTime = self.connectionStartTime,
+                   Date().timeIntervalSince(startTime) > self.connectionTimeout {
+                    print("Connection timeout, cancelling and will retry...")
+                    self.connection?.cancel()
+                    self.connection = nil
+                    self.connectionStartTime = nil
+                }
             case .preparing:
                 print("Connection preparing...")
             case .ready:
                 print("✓ Connected to receiver")
                 newConnectedState = true
+                self.connectionStartTime = nil
             case .failed(let error):
                 print("✗ Connection failed: \(error)")
+                self.connection = nil
+                self.connectionStartTime = nil
                 // Don't call transferFailed here as it might be a temporary connection issue
             case .cancelled:
                 print("Connection cancelled")
+                self.connection = nil
+                self.connectionStartTime = nil
             @unknown default:
                 print("Connection state: \(state)")
                 break
@@ -104,6 +123,98 @@ class FileTransferService {
         }
         // Try connecting immediately
         connectDirect(host: host, port: port)
+        // Start periodic connection checks
+        startConnectionChecks()
+    }
+    
+    private func startConnectionChecks() {
+        // Stop existing timer if any
+        stopConnectionChecks()
+        
+        // Only start checks if we have a receiver configured
+        guard !receiverHost.isEmpty else { return }
+        
+        connectionCheckTimer = Timer.scheduledTimer(withTimeInterval: connectionCheckInterval, repeats: true) { [weak self] _ in
+            self?.checkConnection()
+        }
+    }
+    
+    private func stopConnectionChecks() {
+        connectionCheckTimer?.invalidate()
+        connectionCheckTimer = nil
+    }
+    
+    private func checkConnection() {
+        // If we have a receiver configured, check connection status
+        guard !receiverHost.isEmpty else {
+            stopConnectionChecks()
+            return
+        }
+        
+        // Check if connection exists and is ready
+        if let conn = connection {
+            switch conn.state {
+            case .ready:
+                // Connection is good, update state if needed
+                if !isConnected {
+                    isConnected = true
+                    DispatchQueue.main.async {
+                        self.delegate?.connectionStateChanged(true)
+                    }
+                }
+            case .failed, .cancelled:
+                // Connection lost, try to reconnect
+                print("Connection lost, attempting to reconnect...")
+                connection = nil
+                connectionStartTime = nil
+                isConnected = false
+                DispatchQueue.main.async {
+                    self.delegate?.connectionStateChanged(false)
+                }
+                connectDirect(host: receiverHost, port: receiverPort)
+            case .waiting:
+                // Check if we've been waiting too long (timeout)
+                if let startTime = connectionStartTime,
+                   Date().timeIntervalSince(startTime) > connectionTimeout {
+                    print("Connection timeout in waiting state, cancelling and retrying...")
+                    conn.cancel()
+                    connection = nil
+                    connectionStartTime = nil
+                    isConnected = false
+                    DispatchQueue.main.async {
+                        self.delegate?.connectionStateChanged(false)
+                    }
+                    connectDirect(host: receiverHost, port: receiverPort)
+                }
+            case .setup, .preparing:
+                // Connection in progress, wait (but check for timeout)
+                if let startTime = connectionStartTime,
+                   Date().timeIntervalSince(startTime) > connectionTimeout {
+                    print("Connection timeout, cancelling and retrying...")
+                    conn.cancel()
+                    connection = nil
+                    connectionStartTime = nil
+                    isConnected = false
+                    DispatchQueue.main.async {
+                        self.delegate?.connectionStateChanged(false)
+                    }
+                    connectDirect(host: receiverHost, port: receiverPort)
+                }
+            @unknown default:
+                break
+            }
+        } else {
+            // No connection exists, try to connect
+            if !isConnected {
+                // Only log if we're not already trying to connect
+                print("No connection exists, attempting to connect to \(receiverAddress)...")
+            }
+            isConnected = false
+            DispatchQueue.main.async {
+                self.delegate?.connectionStateChanged(false)
+            }
+            connectDirect(host: receiverHost, port: receiverPort)
+        }
     }
     
     func sendFiles(videoURL: URL, metadataURL: URL) {
@@ -296,7 +407,12 @@ class FileTransferService {
     }
     
     func disconnect() {
+        stopConnectionChecks()
         connection?.cancel()
         connection = nil
+        isConnected = false
+        DispatchQueue.main.async {
+            self.delegate?.connectionStateChanged(false)
+        }
     }
 }

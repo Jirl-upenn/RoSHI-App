@@ -93,7 +93,21 @@ struct ContentView: View {
                 }
             }
             
-            // 3. UI Layer (Buttons & Controls)
+            // 3. Countdown Overlay (when using front camera)
+            if model.isCountdownActive {
+                ZStack {
+                    Color.black.opacity(0.7)
+                        .ignoresSafeArea()
+                    
+                    Text("\(model.countdownValue)")
+                        .font(.system(size: 120, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .scaleEffect(model.countdownScale)
+                        .animation(.easeOut(duration: 0.3), value: model.countdownValue)
+                }
+            }
+            
+            // 4. UI Layer (Buttons & Controls)
             VStack {
                 // Top Bar: Two Buttons + FPS Counter
                 HStack(spacing: 12) {
@@ -172,7 +186,7 @@ struct ContentView: View {
                         .background(Color.black.opacity(0.5))
                         .cornerRadius(8)
                 }
-                .padding(.top, 50)
+                .padding(.top, 10)
                 .padding(.horizontal)
                 
                 Spacer()
@@ -195,6 +209,9 @@ struct ContentView: View {
                 ZStack {
                     // Record Button (Centered)
                     Button(action: {
+                        // Only allow recording if connected
+                        guard model.isReceiverConnected else { return }
+                        
                         if model.isRecording {
                             model.stopRecording()
                         } else {
@@ -203,7 +220,7 @@ struct ContentView: View {
                     }) {
                         ZStack {
                             Circle()
-                                .fill(model.isRecording ? Color.red : Color.white)
+                                .fill(model.isRecording ? Color.red : (model.isReceiverConnected ? Color.white : Color.gray))
                                 .frame(width: 70, height: 70)
                             if model.isRecording {
                                 RoundedRectangle(cornerRadius: 4)
@@ -211,11 +228,13 @@ struct ContentView: View {
                                     .frame(width: 24, height: 24)
                             } else {
                                 Circle()
-                                    .fill(Color.red)
+                                    .fill(model.isReceiverConnected ? Color.red : Color.gray.opacity(0.5))
                                     .frame(width: 60, height: 60)
                             }
                         }
                     }
+                    .disabled(!model.isReceiverConnected && !model.isRecording)
+                    .opacity(model.isReceiverConnected || model.isRecording ? 1.0 : 0.5)
                     
                     // Camera Flip Button (Right side)
                     HStack {
@@ -355,6 +374,13 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     @Published var isReceiverConnected: Bool = false
     @Published var showReceiverSettings: Bool = false
     
+    // Countdown state
+    @Published var isCountdownActive: Bool = false
+    @Published var countdownValue: Int = 3
+    @Published var countdownScale: CGFloat = 1.0
+    
+    private var countdownTimer: Timer?
+    
     var receiverAddress: String {
         return fileTransferService.receiverAddress
     }
@@ -400,6 +426,54 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     }
     
     func startRecording() {
+        // Only allow recording if receiver is connected
+        guard isReceiverConnected else {
+            print("Cannot start recording: receiver not connected")
+            return
+        }
+        
+        // If using front camera, show countdown first
+        if isFront {
+            startCountdown()
+        } else {
+            startRecordingImmediately()
+        }
+    }
+    
+    private func startCountdown() {
+        DispatchQueue.main.async {
+            self.isCountdownActive = true
+            self.countdownValue = 3
+            self.countdownScale = 1.0
+        }
+        
+        countdownTimer?.invalidate()
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            
+            DispatchQueue.main.async {
+                self.countdownValue -= 1
+                self.countdownScale = 1.3
+                
+                // Animate scale back
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.countdownScale = 1.0
+                }
+                
+                if self.countdownValue <= 0 {
+                    timer.invalidate()
+                    self.countdownTimer = nil
+                    self.isCountdownActive = false
+                    self.startRecordingImmediately()
+                }
+            }
+        }
+    }
+    
+    private func startRecordingImmediately() {
         let resolution = CGSize(width: videoW, height: videoH)
         videoRecorder.startRecording(resolution: resolution)
         DispatchQueue.main.async {
@@ -408,6 +482,13 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     }
     
     func stopRecording() {
+        // Cancel countdown if active
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        DispatchQueue.main.async {
+            self.isCountdownActive = false
+        }
+        
         videoRecorder.stopRecording { [weak self] videoURL, metadataURL in
             guard let self = self else { return }
             DispatchQueue.main.async {
