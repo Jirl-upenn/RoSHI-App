@@ -273,10 +273,7 @@ class FileTransferService {
             if sendAttempts >= maxSendAttempts {
                 sendAttempts = 0
                 print("✗ Max connection attempts reached")
-                // Delete files even on failure
-                try? FileManager.default.removeItem(at: videoURL)
-                try? FileManager.default.removeItem(at: metadataURL)
-                print("Files deleted after transfer failure")
+                print("Files kept locally: \(videoURL.lastPathComponent)")
                 delegate?.transferFailed(TransferError.connectionFailed)
                 return
             }
@@ -285,10 +282,7 @@ class FileTransferService {
         // Ensure we have a receiver configured
         guard !receiverHost.isEmpty else {
             print("✗ No receiver configured")
-            // Delete files even on failure
-            try? FileManager.default.removeItem(at: videoURL)
-            try? FileManager.default.removeItem(at: metadataURL)
-            print("Files deleted after transfer failure")
+            print("Files kept locally: \(videoURL.lastPathComponent)")
             delegate?.transferFailed(TransferError.connectionFailed)
             return
         }
@@ -320,28 +314,26 @@ class FileTransferService {
                     // Then send metadata
                     self.sendFile(url: metadataURL, fileType: 1) { [weak self] success in
                         guard let self = self else { return }
-                        // Delete files regardless of success/failure
-                        try? FileManager.default.removeItem(at: videoURL)
-                        try? FileManager.default.removeItem(at: metadataURL)
-                        
                         if success {
+                            // Delete files only after BOTH transfers succeed
+                            try? FileManager.default.removeItem(at: videoURL)
+                            try? FileManager.default.removeItem(at: metadataURL)
                             DispatchQueue.main.async {
                                 self.delegate?.transferProgress(1.0)
                                 self.delegate?.transferCompleted()
                             }
-                            print("Files deleted after successful transfer")
+                            print("✓ Transfer complete. Files deleted: \(videoURL.lastPathComponent)")
                         } else {
+                            // Keep files locally on metadata transfer failure
                             DispatchQueue.main.async {
                                 self.delegate?.transferFailed(TransferError.sendFailed)
                             }
-                            print("Files deleted after transfer failure")
+                            print("✗ Metadata transfer failed. Files kept locally: \(videoURL.lastPathComponent)")
                         }
                     }
                 } else {
-                    // Delete files on video send failure
-                    try? FileManager.default.removeItem(at: videoURL)
-                    try? FileManager.default.removeItem(at: metadataURL)
-                    print("Files deleted after transfer failure")
+                    // Keep files locally on video transfer failure
+                    print("✗ Video transfer failed. Files kept locally: \(videoURL.lastPathComponent)")
                     DispatchQueue.main.async {
                         self.delegate?.transferFailed(TransferError.sendFailed)
                     }

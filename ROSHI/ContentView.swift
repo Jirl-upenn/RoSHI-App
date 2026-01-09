@@ -30,14 +30,28 @@ struct ContentView: View {
                 let videoW = model.videoW
                 let videoH = model.videoH
                 
+                // Calculate scale for resizeAspectFill (use max to fill the screen)
                 let scale = max(screenW / videoW, screenH / videoH)
-                let offsetX = (videoW * scale - screenW) / 2.0
-                let offsetY = (videoH * scale - screenH) / 2.0
+                let scaledVideoW = videoW * scale
+                let scaledVideoH = videoH * scale
+                
+                // Calculate crop offsets (centered crop for aspect fill)
+                let offsetX = (scaledVideoW - screenW) / 2.0
+                let offsetY = (scaledVideoH - screenH) / 2.0
                 
                 let map2D = { (point: CGPoint) -> CGPoint in
-                    let x = (point.x * scale) - offsetX
-                    let y = (point.y * scale) - offsetY
-                    return CGPoint(x: x, y: y)
+                    var x = point.x
+                    
+                    // For front camera: preview layer is NOT mirrored, but SwiftUI scaleEffect mirrors it
+                    // Detection coordinates are in un-mirrored space, so we need to flip X to match
+                    if model.isFront {
+                        x = videoW - x
+                    }
+                    
+                    // Scale and offset to match the aspect-fill preview
+                    let mappedX = (x * scale) - offsetX
+                    let mappedY = (point.y * scale) - offsetY
+                    return CGPoint(x: mappedX, y: mappedY)
                 }
                 
                 let project = { (point: simd_float3, tag: AprilTag3D) -> CGPoint? in
@@ -253,7 +267,15 @@ struct ContentView: View {
                 .padding(.bottom, 40)
             }
         }
-        .onAppear { model.cameraManager.start() }
+        .onAppear {
+            model.cameraManager.start()
+            // Prevent screen from locking while app is active
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        .onDisappear {
+            // Re-enable idle timer when view disappears
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
         .sheet(isPresented: $model.showReceiverSettings) {
             ReceiverSettingsView(model: model)
         }
@@ -526,7 +548,7 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         DispatchQueue.main.async {
             self.isTransferring = false
             self.transferProgress = 1.0
-            print("Transfer completed, files deleted")
+            print("Transfer completed successfully")
         }
     }
     
@@ -577,16 +599,49 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     }
 }
 
-// MARK: - THE MISSING STRUCT!
+// MARK: - Camera Preview
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: UIScreen.main.bounds)
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.frame = view.frame
-        previewLayer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(previewLayer)
-        return view
+    
+    func makeUIView(context: Context) -> CameraPreviewView {
+        return CameraPreviewView(session: session)
     }
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    
+    func updateUIView(_ uiView: CameraPreviewView, context: Context) {
+        uiView.updateLayout()
+    }
+}
+
+class CameraPreviewView: UIView {
+    private let previewLayer: AVCaptureVideoPreviewLayer
+    
+    init(session: AVCaptureSession) {
+        previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        super.init(frame: .zero)
+        
+        previewLayer.videoGravity = .resizeAspectFill
+        // Disable automatic mirroring - we'll handle mirroring in SwiftUI
+        if let connection = previewLayer.connection {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = false
+        }
+        layer.addSublayer(previewLayer)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        previewLayer.frame = bounds
+    }
+    
+    func updateLayout() {
+        // Update preview layer connection settings when session changes
+        if let connection = previewLayer.connection {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = false
+        }
+    }
 }

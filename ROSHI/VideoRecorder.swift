@@ -63,8 +63,8 @@ class VideoRecorder {
     private var recordingResolution: CGSize?
     private var recordingFPS: Double = 30.0
     private var recordingIntrinsics: CodableMatrix3x3?
-    private var stopTime: Date?
-    private let trimDuration: TimeInterval = 3.0 // Remove last 3 seconds
+    private var sessionStarted = false
+    private var framesWritten = 0
     
     init() {
         frameInterval = CMTime(value: 1, timescale: CMTimeScale(targetFPS))
@@ -124,6 +124,8 @@ class VideoRecorder {
                 self.recordingResolution = resolution
                 self.recordingFPS = fps
                 self.recordingIntrinsics = nil // Will be set on first frame
+                self.sessionStarted = false
+                self.framesWritten = 0
                 
                 print("Recording started: \(videoURL.path)")
                 print("Metadata will be saved to: \(metadataURL.path)")
@@ -142,12 +144,21 @@ class VideoRecorder {
                   let adaptor = self.adaptor,
                   writer.status == .writing else { return }
             
+            // Check if pixel buffer pool is available BEFORE starting session
+            // (may not be ready on first few frames)
+            guard let pixelBufferPool = adaptor.pixelBufferPool else {
+                print("Pixel buffer pool not ready yet, skipping frame")
+                return
+            }
+            
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             
             // Maintain fixed FPS by calculating frame time
-            if self.lastFrameTime == CMTime.zero {
+            if !self.sessionStarted {
                 writer.startSession(atSourceTime: presentationTime)
                 self.lastFrameTime = presentationTime
+                self.sessionStarted = true
+                print("Recording session started at time: \(presentationTime.seconds)")
             } else {
                 // Calculate next frame time based on fixed FPS
                 self.lastFrameTime = CMTimeAdd(self.lastFrameTime, self.frameInterval)
@@ -155,14 +166,14 @@ class VideoRecorder {
             
             // Convert pixel buffer to BGRA format for recording using Core Image
             var bgraBuffer: CVPixelBuffer?
-            let status = CVPixelBufferPoolCreatePixelBuffer(
+            let createStatus = CVPixelBufferPoolCreatePixelBuffer(
                 kCFAllocatorDefault,
-                adaptor.pixelBufferPool!,
+                pixelBufferPool,
                 &bgraBuffer
             )
             
-            guard status == kCVReturnSuccess, let bgra = bgraBuffer else {
-                print("Failed to create pixel buffer")
+            guard createStatus == kCVReturnSuccess, let bgra = bgraBuffer else {
+                print("Failed to create pixel buffer, status: \(createStatus)")
                 return
             }
             
@@ -172,7 +183,15 @@ class VideoRecorder {
             
             // Append frame
             if input.isReadyForMoreMediaData {
-                adaptor.append(bgra, withPresentationTime: self.lastFrameTime)
+                let appendSuccess = adaptor.append(bgra, withPresentationTime: self.lastFrameTime)
+                if !appendSuccess {
+                    print("Failed to append frame \(self.frameIndex), writer status: \(writer.status.rawValue)")
+                    if let error = writer.error {
+                        print("Writer error: \(error)")
+                    }
+                    return
+                }
+                self.framesWritten += 1
                 
                 // Store metadata
                 let utcTime = Date()
@@ -225,10 +244,6 @@ class VideoRecorder {
                 return
             }
             
-            // Record stop time and calculate cutoff (3 seconds before stop)
-            self.stopTime = Date()
-            let cutoffTime = (self.stopTime?.timeIntervalSince1970 ?? 0) - self.trimDuration
-            
             self._isRecording = false
             
             guard let writer = self.assetWriter,
@@ -237,105 +252,75 @@ class VideoRecorder {
                 return
             }
             
+            // Check if we actually wrote any frames
+            let framesWrittenCount = self.framesWritten
+            print("Stopping recording. Frames written: \(framesWrittenCount), session started: \(self.sessionStarted)")
+            
+            if framesWrittenCount == 0 || !self.sessionStarted {
+                print("⚠️ No frames were written! Cancelling writer instead of finishing.")
+                writer.cancelWriting()
+                // Clean up the empty file
+                try? FileManager.default.removeItem(at: writer.outputURL)
+                DispatchQueue.main.async {
+                    completion(nil, nil)
+                }
+                return
+            }
+            
             input.markAsFinished()
             
             writer.finishWriting {
-                let originalVideoURL = writer.outputURL
-                
-                // Filter metadata to remove last 3 seconds
-                let filteredMetadata = self.metadata.filter { frame in
-                    frame.timestampSeconds < cutoffTime
+                // Check writer status after finishing
+                if writer.status == .failed {
+                    print("❌ Writer failed: \(writer.error?.localizedDescription ?? "unknown error")")
+                    DispatchQueue.main.async {
+                        completion(nil, nil)
+                    }
+                    return
                 }
                 
-                print("Original frames: \(self.metadata.count), After trimming last 3 seconds: \(filteredMetadata.count)")
+                let videoURL = writer.outputURL
                 
-                // Create temporary file for trimmed video
+                // Verify the file was actually written
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: videoURL.path),
+                   let fileSize = attrs[.size] as? UInt64 {
+                    print("Video file size: \(fileSize) bytes, frames written: \(framesWrittenCount)")
+                    if fileSize == 0 {
+                        print("⚠️ Video file is 0 bytes!")
+                    }
+                }
+                
+                // Save metadata with recording info
                 let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let timestamp = ISO8601DateFormatter().string(from: self.startTime ?? Date())
                     .replacingOccurrences(of: ":", with: "-")
-                let tempVideoURL = documentsPath.appendingPathComponent("recording_\(timestamp)_temp.mp4")
+                let metadataURL = documentsPath.appendingPathComponent("recording_\(timestamp)_metadata.json")
                 
-                // Trim video file to remove last 3 seconds
-                self.trimVideo(inputURL: originalVideoURL, outputURL: tempVideoURL, trimDuration: self.trimDuration) { trimmedURL in
-                    // Replace original with trimmed version
-                    if let trimmedURL = trimmedURL {
-                        try? FileManager.default.removeItem(at: originalVideoURL)
-                        try? FileManager.default.moveItem(at: trimmedURL, to: originalVideoURL)
-                    }
-                    let finalVideoURL = originalVideoURL
+                do {
+                    let resolution = Resolution(
+                        width: Int(self.recordingResolution?.width ?? 0),
+                        height: Int(self.recordingResolution?.height ?? 0)
+                    )
                     
-                    // Save metadata with recording info (filtered)
-                    let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    let timestamp = ISO8601DateFormatter().string(from: self.startTime ?? Date())
-                        .replacingOccurrences(of: ":", with: "-")
-                    let metadataURL = documentsPath.appendingPathComponent("recording_\(timestamp)_metadata.json")
+                    let recordingMetadata = RecordingMetadata(
+                        resolution: resolution,
+                        fps: self.recordingFPS,
+                        cameraIntrinsics: self.recordingIntrinsics,
+                        frames: self.metadata
+                    )
                     
-                    do {
-                        let resolution = Resolution(
-                            width: Int(self.recordingResolution?.width ?? 0),
-                            height: Int(self.recordingResolution?.height ?? 0)
-                        )
-                        
-                        let recordingMetadata = RecordingMetadata(
-                            resolution: resolution,
-                            fps: self.recordingFPS,
-                            cameraIntrinsics: self.recordingIntrinsics,
-                            frames: filteredMetadata
-                        )
-                        
-                        let encoder = JSONEncoder()
-                        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                        let jsonData = try encoder.encode(recordingMetadata)
-                        try jsonData.write(to: metadataURL)
-                        print("Metadata saved to: \(metadataURL.path)")
-                    } catch {
-                        print("Failed to save metadata: \(error)")
-                    }
-                    
-                    DispatchQueue.main.async {
-                        completion(finalVideoURL, metadataURL)
-                    }
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let jsonData = try encoder.encode(recordingMetadata)
+                    try jsonData.write(to: metadataURL)
+                    print("Metadata saved to: \(metadataURL.path)")
+                } catch {
+                    print("Failed to save metadata: \(error)")
                 }
-            }
-        }
-    }
-    
-    private func trimVideo(inputURL: URL, outputURL: URL, trimDuration: TimeInterval, completion: @escaping (URL?) -> Void) {
-        let asset = AVAsset(url: inputURL)
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
-            print("Failed to create export session")
-            completion(nil)
-            return
-        }
-        
-        // Calculate new duration (original - trim duration)
-        let duration = asset.duration.seconds
-        let newDuration = max(0, duration - trimDuration)
-        
-        if newDuration <= 0 {
-            print("Video too short to trim")
-            completion(nil)
-            return
-        }
-        
-        let startTime = CMTime.zero
-        let endTime = CMTime(seconds: newDuration, preferredTimescale: 600)
-        let timeRange = CMTimeRange(start: startTime, end: endTime)
-        
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mp4
-        exportSession.timeRange = timeRange
-        
-        exportSession.exportAsynchronously {
-            switch exportSession.status {
-            case .completed:
-                print("Video trimmed successfully")
-                completion(outputURL)
-            case .failed, .cancelled:
-                print("Video trim failed: \(exportSession.error?.localizedDescription ?? "unknown error")")
-                completion(nil)
-            default:
-                completion(nil)
+                
+                DispatchQueue.main.async {
+                    completion(videoURL, metadataURL)
+                }
             }
         }
     }
