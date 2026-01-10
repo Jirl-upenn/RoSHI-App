@@ -42,8 +42,12 @@ struct ContentView: View {
                 let offsetY = (videoH * scale - screenH) / 2.0
                 
                 let map2D = { (point: CGPoint) -> CGPoint in
-                    let x = (point.x * scale) - offsetX
+                    var x = (point.x * scale) - offsetX
                     let y = (point.y * scale) - offsetY
+                    // Keep overlay aligned with the mirrored preview when using the front camera.
+                    if model.isFront {
+                        x = screenW - x
+                    }
                     return CGPoint(x: x, y: y)
                 }
                 
@@ -100,6 +104,7 @@ struct ContentView: View {
                     .offset(y: -80)
                 }
             }
+            .ignoresSafeArea()
             
             // 3. Countdown Overlay (when using front camera)
             if model.isCountdownActive {
@@ -425,7 +430,8 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     // FPS Calc
     private var frameCount = 0
     private var lastTime: TimeInterval = 0
-    let tagSizeMeters = 0.05
+    // Physical tag size (black square side length) in meters.
+    let tagSizeMeters = 0.042
     
     init() {
         cameraManager.delegate = self
@@ -605,6 +611,17 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         }
         
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // Keep UI overlay scaling in sync with the actual CVPixelBuffer dimensions.
+        // (Session presets are not guaranteed to match the delivered pixel buffer size on all devices.)
+        let w = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+        let h = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
+        if w != videoW || h != videoH {
+            DispatchQueue.main.async {
+                self.videoW = w
+                self.videoH = h
+            }
+        }
         
         var intrinsics: matrix_float3x3? = nil
         let key = "CameraIntrinsicMatrix" as CFString
@@ -627,12 +644,18 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
     func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: UIScreen.main.bounds)
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.frame = view.frame
-        previewLayer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(previewLayer)
+        let view = PreviewView()
+        view.videoPreviewLayer.session = session
+        view.videoPreviewLayer.videoGravity = .resizeAspectFill
         return view
     }
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard let view = uiView as? PreviewView else { return }
+        view.videoPreviewLayer.session = session
+    }
+}
+
+final class PreviewView: UIView {
+    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+    var videoPreviewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 }

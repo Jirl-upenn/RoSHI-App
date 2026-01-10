@@ -26,8 +26,11 @@ class AprilTagDetector {
             apriltag_detector_add_family_bits(td, tf, 2)
         }
         td?.pointee.nthreads = 2
-        td?.pointee.quad_decimate = 2.0
+        // Higher accuracy corner localization (at a cost of CPU).
+        // If you need more FPS, try 1.5–2.0.
+        td?.pointee.quad_decimate = 1.5
         td?.pointee.quad_sigma = 0.0
+        td?.pointee.refine_edges = true
     }
     
     deinit {
