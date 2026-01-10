@@ -52,13 +52,12 @@ class VideoRecorder {
     private var videoInput: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var _isRecording = false
-    private let recordingQueue = DispatchQueue(label: "recording.queue", attributes: .concurrent)
+    // IMPORTANT: Use serial queue to prevent race conditions with frame timing
+    private let recordingQueue = DispatchQueue(label: "recording.queue")
     private var frameIndex = 0
     private var startTime: Date?
     private var metadata: [FrameMetadata] = []
-    private var lastFrameTime: CMTime = CMTime.zero
-    private let targetFPS: Double = 30.0
-    private let frameInterval: CMTime
+    private var sessionStartTime: CMTime = CMTime.zero
     private let ciContext: CIContext
     private var recordingResolution: CGSize?
     private var recordingFPS: Double = 30.0
@@ -67,12 +66,12 @@ class VideoRecorder {
     private var framesWritten = 0
     
     init() {
-        frameInterval = CMTime(value: 1, timescale: CMTimeScale(targetFPS))
         ciContext = CIContext(options: [.useSoftwareRenderer: false])
     }
     
     func startRecording(resolution: CGSize, fps: Double = 30.0) {
-        recordingQueue.async(flags: .barrier) {
+        // Use serial queue - no barrier needed
+        recordingQueue.async {
             guard !self._isRecording else { return }
             
             let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -120,7 +119,7 @@ class VideoRecorder {
                 self.frameIndex = 0
                 self.startTime = Date()
                 self.metadata = []
-                self.lastFrameTime = CMTime.zero
+                self.sessionStartTime = CMTime.zero
                 self.recordingResolution = resolution
                 self.recordingFPS = fps
                 self.recordingIntrinsics = nil // Will be set on first frame
@@ -137,6 +136,14 @@ class VideoRecorder {
     }
     
     func appendFrame(pixelBuffer: CVPixelBuffer, sampleBuffer: CMSampleBuffer, detections: [AprilTag3D], intrinsics: matrix_float3x3?) {
+        // IMPORTANT: Extract presentation time SYNCHRONOUSLY before async dispatch
+        // CMSampleBuffer is recycled after this callback returns!
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        
+        // Create CIImage synchronously to capture the pixel data
+        // CIImage holds a reference to the pixel buffer data
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        
         recordingQueue.async {
             guard self._isRecording,
                   let writer = self.assetWriter,
@@ -144,24 +151,18 @@ class VideoRecorder {
                   let adaptor = self.adaptor,
                   writer.status == .writing else { return }
             
-            // Check if pixel buffer pool is available BEFORE starting session
-            // (may not be ready on first few frames)
+            // Check if pixel buffer pool is available
             guard let pixelBufferPool = adaptor.pixelBufferPool else {
                 print("Pixel buffer pool not ready yet, skipping frame")
                 return
             }
             
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            
-            // Maintain fixed FPS by calculating frame time
+            // Start session on first frame
             if !self.sessionStarted {
                 writer.startSession(atSourceTime: presentationTime)
-                self.lastFrameTime = presentationTime
+                self.sessionStartTime = presentationTime
                 self.sessionStarted = true
                 print("Recording session started at time: \(presentationTime.seconds)")
-            } else {
-                // Calculate next frame time based on fixed FPS
-                self.lastFrameTime = CMTimeAdd(self.lastFrameTime, self.frameInterval)
             }
             
             // Convert pixel buffer to BGRA format for recording using Core Image
@@ -177,70 +178,75 @@ class VideoRecorder {
                 return
             }
             
-            // Use Core Image to convert YUV to BGRA
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+            // Render the captured CIImage to the BGRA buffer
             self.ciContext.render(ciImage, to: bgra)
             
-            // Append frame
-            if input.isReadyForMoreMediaData {
-                let appendSuccess = adaptor.append(bgra, withPresentationTime: self.lastFrameTime)
-                if !appendSuccess {
-                    print("Failed to append frame \(self.frameIndex), writer status: \(writer.status.rawValue)")
-                    if let error = writer.error {
-                        print("Writer error: \(error)")
-                    }
-                    return
-                }
-                self.framesWritten += 1
-                
-                // Store metadata
-                let utcTime = Date()
-                let timestamp = utcTime.timeIntervalSince1970
-                let isoFormatter = ISO8601DateFormatter()
-                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                
-                let tagDetections = detections.map { tag -> TagDetection in
-                    let rotation = tag.rotation
-                    return TagDetection(
-                        id: tag.id,
-                        center: CodablePoint(x: tag.center.x, y: tag.center.y),
-                        corners: tag.corners.map { CodablePoint(x: $0.x, y: $0.y) },
-                        position: CodableVector3(x: tag.position.x, y: tag.position.y, z: tag.position.z),
-                        rotation: CodableMatrix3x3(
-                            m11: rotation.columns.0.x, m12: rotation.columns.1.x, m13: rotation.columns.2.x,
-                            m21: rotation.columns.0.y, m22: rotation.columns.1.y, m23: rotation.columns.2.y,
-                            m31: rotation.columns.0.z, m32: rotation.columns.1.z, m33: rotation.columns.2.z
-                        ),
-                        distance: tag.distance
-                    )
-                }
-                
-                // Store intrinsics only once (on first frame)
-                if self.recordingIntrinsics == nil, let intrinsics = intrinsics {
-                    self.recordingIntrinsics = CodableMatrix3x3(
-                        m11: intrinsics.columns.0.x, m12: intrinsics.columns.1.x, m13: intrinsics.columns.2.x,
-                        m21: intrinsics.columns.0.y, m22: intrinsics.columns.1.y, m23: intrinsics.columns.2.y,
-                        m31: intrinsics.columns.0.z, m32: intrinsics.columns.1.z, m33: intrinsics.columns.2.z
-                    )
-                }
-                
-                let frameMeta = FrameMetadata(
-                    frameIndex: self.frameIndex,
-                    utcTimestamp: isoFormatter.string(from: utcTime),
-                    timestampSeconds: timestamp,
-                    detections: tagDetections
-                )
-                
-                self.metadata.append(frameMeta)
-                self.frameIndex += 1
+            // Append frame - check if input is ready
+            guard input.isReadyForMoreMediaData else {
+                print("Input not ready for more data, skipping frame \(self.frameIndex)")
+                return
             }
+            
+            let appendSuccess = adaptor.append(bgra, withPresentationTime: presentationTime)
+            if !appendSuccess {
+                print("Failed to append frame \(self.frameIndex), writer status: \(writer.status.rawValue)")
+                if let error = writer.error {
+                    print("Writer error: \(error)")
+                }
+                return
+            }
+            self.framesWritten += 1
+            
+            // Store metadata
+            let utcTime = Date()
+            let timestamp = utcTime.timeIntervalSince1970
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            
+            let tagDetections = detections.map { tag -> TagDetection in
+                let rotation = tag.rotation
+                return TagDetection(
+                    id: tag.id,
+                    center: CodablePoint(x: tag.center.x, y: tag.center.y),
+                    corners: tag.corners.map { CodablePoint(x: $0.x, y: $0.y) },
+                    position: CodableVector3(x: tag.position.x, y: tag.position.y, z: tag.position.z),
+                    rotation: CodableMatrix3x3(
+                        m11: rotation.columns.0.x, m12: rotation.columns.1.x, m13: rotation.columns.2.x,
+                        m21: rotation.columns.0.y, m22: rotation.columns.1.y, m23: rotation.columns.2.y,
+                        m31: rotation.columns.0.z, m32: rotation.columns.1.z, m33: rotation.columns.2.z
+                    ),
+                    distance: tag.distance
+                )
+            }
+            
+            // Store intrinsics only once (on first frame)
+            if self.recordingIntrinsics == nil, let intrinsics = intrinsics {
+                self.recordingIntrinsics = CodableMatrix3x3(
+                    m11: intrinsics.columns.0.x, m12: intrinsics.columns.1.x, m13: intrinsics.columns.2.x,
+                    m21: intrinsics.columns.0.y, m22: intrinsics.columns.1.y, m23: intrinsics.columns.2.y,
+                    m31: intrinsics.columns.0.z, m32: intrinsics.columns.1.z, m33: intrinsics.columns.2.z
+                )
+            }
+            
+            let frameMeta = FrameMetadata(
+                frameIndex: self.frameIndex,
+                utcTimestamp: isoFormatter.string(from: utcTime),
+                timestampSeconds: timestamp,
+                detections: tagDetections
+            )
+            
+            self.metadata.append(frameMeta)
+            self.frameIndex += 1
         }
     }
     
     func stopRecording(completion: @escaping (URL?, URL?) -> Void) {
-        recordingQueue.async(flags: .barrier) {
+        // Use serial queue - no barrier needed
+        recordingQueue.async {
             guard self._isRecording else {
-                completion(nil, nil)
+                DispatchQueue.main.async {
+                    completion(nil, nil)
+                }
                 return
             }
             
@@ -248,7 +254,9 @@ class VideoRecorder {
             
             guard let writer = self.assetWriter,
                   let input = self.videoInput else {
-                completion(nil, nil)
+                DispatchQueue.main.async {
+                    completion(nil, nil)
+                }
                 return
             }
             
@@ -256,6 +264,7 @@ class VideoRecorder {
             let framesWrittenCount = self.framesWritten
             print("Stopping recording. Frames written: \(framesWrittenCount), session started: \(self.sessionStarted)")
             
+            // Need at least some frames for a valid video
             if framesWrittenCount == 0 || !self.sessionStarted {
                 print("⚠️ No frames were written! Cancelling writer instead of finishing.")
                 writer.cancelWriting()
@@ -265,6 +274,11 @@ class VideoRecorder {
                     completion(nil, nil)
                 }
                 return
+            }
+            
+            // If very few frames, wait a moment for encoder to catch up
+            if framesWrittenCount < 10 {
+                print("⚠️ Very short recording (\(framesWrittenCount) frames), encoder may fail")
             }
             
             input.markAsFinished()

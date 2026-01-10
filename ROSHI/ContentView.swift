@@ -13,6 +13,13 @@ struct ContentView: View {
     @State private var resLabel: String = "720p"
     @State private var fpsLabel: String = "30 FPS"
     
+    // Format duration as MM:SS
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+    
     var body: some View {
         ZStack {
             // 1. Camera Preview
@@ -30,28 +37,14 @@ struct ContentView: View {
                 let videoW = model.videoW
                 let videoH = model.videoH
                 
-                // Calculate scale for resizeAspectFill (use max to fill the screen)
                 let scale = max(screenW / videoW, screenH / videoH)
-                let scaledVideoW = videoW * scale
-                let scaledVideoH = videoH * scale
-                
-                // Calculate crop offsets (centered crop for aspect fill)
-                let offsetX = (scaledVideoW - screenW) / 2.0
-                let offsetY = (scaledVideoH - screenH) / 2.0
+                let offsetX = (videoW * scale - screenW) / 2.0
+                let offsetY = (videoH * scale - screenH) / 2.0
                 
                 let map2D = { (point: CGPoint) -> CGPoint in
-                    var x = point.x
-                    
-                    // For front camera: preview layer is NOT mirrored, but SwiftUI scaleEffect mirrors it
-                    // Detection coordinates are in un-mirrored space, so we need to flip X to match
-                    if model.isFront {
-                        x = videoW - x
-                    }
-                    
-                    // Scale and offset to match the aspect-fill preview
-                    let mappedX = (x * scale) - offsetX
-                    let mappedY = (point.y * scale) - offsetY
-                    return CGPoint(x: mappedX, y: mappedY)
+                    let x = (point.x * scale) - offsetX
+                    let y = (point.y * scale) - offsetY
+                    return CGPoint(x: x, y: y)
                 }
                 
                 let project = { (point: simd_float3, tag: AprilTag3D) -> CGPoint? in
@@ -75,12 +68,13 @@ struct ContentView: View {
                     }
                     .stroke(Color.green, lineWidth: 3)
                     
-                    // 3D Axes
+                    // 3D Axes - RAW AprilTag/Camera coordinates (matches recorded data)
+                    // Camera convention: X right, Y DOWN, Z INTO scene (away from camera)
                     let axisLen = Float(model.tagSizeMeters) * 0.8
-                    let origin = simd_float3(0,0,0)
-                    let x3 = simd_float3(axisLen,0,0)
-                    let y3 = simd_float3(0,axisLen,0)
-                    let z3 = simd_float3(0,0,-axisLen)
+                    let origin = simd_float3(0, 0, 0)
+                    let x3 = simd_float3(axisLen, 0, 0)      // X: right
+                    let y3 = simd_float3(0, axisLen, 0)      // Y: down (raw)
+                    let z3 = simd_float3(0, 0, axisLen)      // Z: into scene / away from camera (raw)
                     
                     if let pO = project(origin, tag),
                        let pX = project(x3, tag),
@@ -204,6 +198,18 @@ struct ContentView: View {
                 .padding(.horizontal)
                 
                 Spacer()
+                
+                // Recording Duration Display (above zoom so it doesn't shift layout)
+                if model.isRecording {
+                    Text(formatDuration(model.recordingDuration))
+                        .font(.system(size: 24, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.8))
+                        .cornerRadius(8)
+                        .padding(.bottom, 8)
+                }
                 
                 // Bottom Controls (Zoom & Flip)
                 HStack {
@@ -401,6 +407,11 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     @Published var countdownValue: Int = 3
     @Published var countdownScale: CGFloat = 1.0
     
+    // Recording duration
+    @Published var recordingDuration: TimeInterval = 0
+    private var recordingStartTime: Date?
+    private var recordingTimer: Timer?
+    
     private var countdownTimer: Timer?
     
     var receiverAddress: String {
@@ -504,12 +515,25 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         videoRecorder.startRecording(resolution: resolution, fps: currentFPS)
         DispatchQueue.main.async {
             self.isRecording = true
+            self.recordingDuration = 0
+            self.recordingStartTime = Date()
+            
+            // Start timer to update duration every 0.1 seconds
+            self.recordingTimer?.invalidate()
+            self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self = self, let startTime = self.recordingStartTime else { return }
+                self.recordingDuration = Date().timeIntervalSince(startTime)
+            }
         }
     }
     
     func stopRecording() {
         // Send stop recording signal to receiver (for IMU data)
         fileTransferService.sendStopRecordingSignal()
+        
+        // Stop recording timer
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         
         // Cancel countdown if active
         countdownTimer?.invalidate()
@@ -599,49 +623,16 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     }
 }
 
-// MARK: - Camera Preview
+// MARK: - THE MISSING STRUCT!
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
-    
-    func makeUIView(context: Context) -> CameraPreviewView {
-        return CameraPreviewView(session: session)
-    }
-    
-    func updateUIView(_ uiView: CameraPreviewView, context: Context) {
-        uiView.updateLayout()
-    }
-}
-
-class CameraPreviewView: UIView {
-    private let previewLayer: AVCaptureVideoPreviewLayer
-    
-    init(session: AVCaptureSession) {
-        previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        super.init(frame: .zero)
-        
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: UIScreen.main.bounds)
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        previewLayer.frame = view.frame
         previewLayer.videoGravity = .resizeAspectFill
-        // Disable automatic mirroring - we'll handle mirroring in SwiftUI
-        if let connection = previewLayer.connection {
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = false
-        }
-        layer.addSublayer(previewLayer)
+        view.layer.addSublayer(previewLayer)
+        return view
     }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        previewLayer.frame = bounds
-    }
-    
-    func updateLayout() {
-        // Update preview layer connection settings when session changes
-        if let connection = previewLayer.connection {
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = false
-        }
-    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
