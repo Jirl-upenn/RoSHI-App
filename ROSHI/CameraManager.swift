@@ -127,7 +127,11 @@ class CameraManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             
             if let connection = self.output.connection(with: .video) {
                 connection.videoOrientation = .portrait
-                connection.isVideoMirrored = false
+                // Treat front camera like a "normal" camera (no selfie mirroring).
+                if connection.isVideoMirroringSupported {
+                    connection.automaticallyAdjustsVideoMirroring = false
+                    connection.isVideoMirrored = false
+                }
                 if connection.isCameraIntrinsicMatrixDeliverySupported {
                     connection.isCameraIntrinsicMatrixDeliveryEnabled = true
                 }

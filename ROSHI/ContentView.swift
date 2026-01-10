@@ -25,8 +25,6 @@ struct ContentView: View {
             // 1. Camera Preview
             CameraPreview(session: model.cameraManager.session)
                 .ignoresSafeArea()
-                .scaleEffect(x: model.isFront ? -1 : 1, y: 1)
-                .animation(.easeInOut, value: model.isFront)
             
             // 2. AR Overlay
             GeometryReader { geometry in
@@ -42,12 +40,8 @@ struct ContentView: View {
                 let offsetY = (videoH * scale - screenH) / 2.0
                 
                 let map2D = { (point: CGPoint) -> CGPoint in
-                    var x = (point.x * scale) - offsetX
+                    let x = (point.x * scale) - offsetX
                     let y = (point.y * scale) - offsetY
-                    // Keep overlay aligned with the mirrored preview when using the front camera.
-                    if model.isFront {
-                        x = screenW - x
-                    }
                     return CGPoint(x: x, y: y)
                 }
                 
@@ -643,19 +637,46 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
 // MARK: - THE MISSING STRUCT!
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+
+    private func configure(_ layer: AVCaptureVideoPreviewLayer) {
+        // Treat front camera like a "normal" camera (no selfie mirroring).
+        if let connection = layer.connection {
+            connection.videoOrientation = .portrait
+            if connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = false
+            }
+        }
+    }
+
     func makeUIView(context: Context) -> UIView {
         let view = PreviewView()
         view.videoPreviewLayer.session = session
         view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        configure(view.videoPreviewLayer)
         return view
     }
     func updateUIView(_ uiView: UIView, context: Context) {
         guard let view = uiView as? PreviewView else { return }
         view.videoPreviewLayer.session = session
+        configure(view.videoPreviewLayer)
     }
 }
 
 final class PreviewView: UIView {
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var videoPreviewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Ensure mirroring settings are applied after the layer gets its connection
+        // (e.g. after session reconfiguration / camera switch).
+        if let connection = videoPreviewLayer.connection {
+            connection.videoOrientation = .portrait
+            if connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = false
+            }
+        }
+    }
 }
