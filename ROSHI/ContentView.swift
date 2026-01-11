@@ -85,7 +85,7 @@ struct ContentView: View {
                     
                     // Info Panel
                     VStack(alignment: .leading) {
-                        Text("ID: \(tag.id)").bold().foregroundColor(.yellow)
+                        Text("ID: \(tag.id + 1)").bold().foregroundColor(.yellow)
                         Text(String(format: "Dist: %.2fm", tag.distance)).bold().foregroundColor(.white)
                         Text(String(format: "X: %.2f", tag.position.x)).foregroundColor(.red).font(.caption)
                         Text(String(format: "Y: %.2f", tag.position.y)).foregroundColor(.green).font(.caption)
@@ -104,7 +104,7 @@ struct ContentView: View {
             if model.isCountdownActive {
                 ZStack {
                     Color.black.opacity(0.7)
-                        .ignoresSafeArea()
+                    .ignoresSafeArea()
                     
                     Text("\(model.countdownValue)")
                         .font(.system(size: 120, weight: .bold, design: .rounded))
@@ -116,85 +116,117 @@ struct ContentView: View {
             
             // 4. UI Layer (Buttons & Controls)
             VStack {
-                // Top Bar: Two Buttons + FPS Counter
-                HStack(spacing: 12) {
+                // Top Bar: Compact Controls
+                HStack(spacing: 8) {
                     
-                    // Button 1: Resolution Cycle (1080p <-> 720p)
+                    // Button 1: Resolution
                     Button(action: {
-                        if resLabel == "1080p" {
-                            resLabel = "720p"
-                        } else {
-                            resLabel = "1080p"
-                        }
+                        if resLabel == "1080p" { resLabel = "720p" }
+                        else { resLabel = "1080p" }
                         model.updateResolution(resLabel)
                     }) {
                         Text(resLabel)
-                            .font(.system(size: 16, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
                             .foregroundColor(.white)
-                            .frame(width: 80, height: 40)
+                            .frame(width: 55, height: 32)
                             .background(Color.black.opacity(0.6))
-                            .cornerRadius(10)
+                            .cornerRadius(8)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10)
+                                RoundedRectangle(cornerRadius: 8)
                                     .stroke(Color.white.opacity(0.5), lineWidth: 1)
                             )
                     }
                     
-                    // Button 2: FPS Cycle (30 -> 20 -> 15 -> 10)
+                    // Button 2: FPS Cycle
                     Button(action: {
-                        // Cycle Logic
                         if fpsLabel == "30 FPS" { fpsLabel = "20 FPS" }
                         else if fpsLabel == "20 FPS" { fpsLabel = "15 FPS" }
                         else if fpsLabel == "15 FPS" { fpsLabel = "10 FPS" }
                         else { fpsLabel = "30 FPS" }
                         
-                        // Parse "30 FPS" -> 30.0
                         let fpsValue = Double(fpsLabel.components(separatedBy: " ")[0]) ?? 30.0
                         model.cameraManager.setFPS(fpsValue)
                     }) {
-                        Text(fpsLabel)
-                            .font(.system(size: 16, weight: .bold))
+                        Text(fpsLabel.replacingOccurrences(of: " FPS", with: ""))
+                            .font(.system(size: 13, weight: .bold))
                             .foregroundColor(.white)
-                            .frame(width: 80, height: 40)
+                            .frame(width: 40, height: 32)
                             .background(Color.black.opacity(0.6))
-                            .cornerRadius(10)
+                            .cornerRadius(8)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10)
+                                RoundedRectangle(cornerRadius: 8)
                                     .stroke(Color.white.opacity(0.5), lineWidth: 1)
                             )
                     }
                     
                     Spacer()
                     
-                    // Receiver Status Indicator
-                    Button(action: {
-                        model.showReceiverSettings = true
-                    }) {
-                        HStack(spacing: 6) {
-                            // Connection Status Dot
+                    // Receiver Status
+                    Button(action: { model.showReceiverSettings = true }) {
+                        HStack(spacing: 4) {
                             Circle()
                                 .fill(model.isReceiverConnected ? Color.green : Color.red)
-                                .frame(width: 10, height: 10)
-                            
+                                .frame(width: 8, height: 8)
                             Image(systemName: "network")
-                                .font(.system(size: 14))
-                                .foregroundColor(.white.opacity(0.8))
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.9))
                         }
-                        .padding(8)
+                        .padding(6)
                         .background(Color.black.opacity(0.5))
-                        .cornerRadius(8)
+                        .cornerRadius(6)
                     }
                     
-                    // Actual FPS Readout
-                    Text(String(format: "FPS: %.0f", model.fps))
-                        .font(.system(size: 20, weight: .bold, design: .monospaced))
-                        .foregroundColor(.green)
-                        .padding(8)
-                        .background(Color.black.opacity(0.5))
+                    // Button 3: Target Cycle
+                    Button(action: {
+                        let current = model.requiredDetectionsPerTag
+                        let next: Int
+                        switch current {
+                        case 100: next = 200
+                        case 200: next = 300
+                        case 300: next = 100
+                        default: next = 200
+                        }
+                        model.requiredDetectionsPerTag = next
+                    }) {
+                        VStack(spacing: -1) {
+                            Text("Target")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                            Text("\(model.requiredDetectionsPerTag)")
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                        }
+                        .frame(width: 50, height: 32)
+                        .background(Color.black.opacity(0.6))
                         .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                        )
+                    }
+                    
+                    // FPS Readout
+                    Text(String(format: "%.0f", model.fps))
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green)
+                        .padding(6)
+                        .background(Color.black.opacity(0.5))
+                        .cornerRadius(6)
                 }
-                .padding(.top, 10)
-                .padding(.horizontal)
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+
+                // Tag detection tracker (starts when recording is initiated)
+                TagDetectionTrackerView(
+                    joints: AppModel.calibrationJoints,
+                    counts: model.tagDetectionCounts,
+                    targetDetections: model.requiredDetectionsPerTag,
+                    showCounts: model.showTagDetectionCounts
+                )
+                // Slightly wider, but still within the screen bounds.
+                .padding(.horizontal, 6)
+                .padding(.top, 6)
+                .frame(maxWidth: .infinity, alignment: .center)
                 
                 Spacer()
                 
@@ -260,11 +292,11 @@ struct ContentView: View {
                         Spacer()
                         Button(action: { model.switchCamera() }) {
                             Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
-                                .font(.title)
-                                .frame(width: 60, height: 60)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
-                                .foregroundColor(.white)
+                            .font(.title)
+                            .frame(width: 60, height: 60)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                            .foregroundColor(.white)
                         }
                     }
                     .padding(.horizontal, 40)
@@ -283,6 +315,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showReceiverSettings) {
             ReceiverSettingsView(model: model)
+        }
+        .alert("Low Detections Warning", isPresented: $model.shouldShowLowDetectionWarning) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Some tags did not reach the target of \(model.requiredDetectionsPerTag) detections. The recording has been saved anyway.")
         }
     }
 }
@@ -391,6 +428,27 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     let detector = AprilTagDetector()
     let videoRecorder = VideoRecorder()
     let fileTransferService = FileTransferService()
+
+    struct CalibrationJoint: Identifiable {
+        let id: Int        // Tag ID (also IMU ID)
+        let name: String   // Full name (for A11y)
+        let label: String  // Compact display text (e.g. "Shoulder")
+    }
+    
+    // Fixed mapping: tag IDs (0..8) correspond to IMU placements / joints.
+    static let calibrationJoints: [CalibrationJoint] = [
+        CalibrationJoint(id: 0, name: "Pelvis", label: "Pelvis"),
+        CalibrationJoint(id: 1, name: "Left Shoulder", label: "Shoulder"),
+        CalibrationJoint(id: 2, name: "Right Shoulder", label: "Shoulder"),
+        CalibrationJoint(id: 3, name: "Left Elbow", label: "Elbow"),
+        CalibrationJoint(id: 4, name: "Right Elbow", label: "Elbow"),
+        CalibrationJoint(id: 5, name: "Left Hip", label: "Hip"),
+        CalibrationJoint(id: 6, name: "Right Hip", label: "Hip"),
+        CalibrationJoint(id: 7, name: "Left Knee", label: "Knee"),
+        CalibrationJoint(id: 8, name: "Right Knee", label: "Knee")
+    ]
+    
+    @Published var requiredDetectionsPerTag: Int = 200
     
     @Published var detectedTags: [AprilTag3D] = []
     @Published var isFront: Bool = true
@@ -400,6 +458,11 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
     @Published var isTransferring: Bool = false
     @Published var isReceiverConnected: Bool = false
     @Published var showReceiverSettings: Bool = false
+
+    // Per-tag detection counts (incremented once per frame per tag while recording)
+    @Published var tagDetectionCounts: [Int: Int] = [:]
+    @Published var showTagDetectionCounts: Bool = false
+    @Published var shouldShowLowDetectionWarning: Bool = false
     
     // Countdown state
     @Published var isCountdownActive: Bool = false
@@ -464,6 +527,10 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
             print("Cannot start recording: receiver not connected")
             return
         }
+
+        // Prepare counters for this recording session (shows tracker immediately at 0/250)
+        resetTagDetectionCounts()
+        showTagDetectionCounts = false
         
         // If using front camera, show countdown first
         if isFront {
@@ -515,6 +582,7 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         videoRecorder.startRecording(resolution: resolution, fps: currentFPS)
         DispatchQueue.main.async {
             self.isRecording = true
+            self.showTagDetectionCounts = true
             self.recordingDuration = 0
             self.recordingStartTime = Date()
             
@@ -542,10 +610,30 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
             self.isCountdownActive = false
         }
         
+        var anyLowDetections = false
+        // Check if any tag is below target
+        let target = self.requiredDetectionsPerTag
+        for joint in Self.calibrationJoints {
+            let count = self.tagDetectionCounts[joint.id] ?? 0
+            if count < target {
+                anyLowDetections = true
+                break
+            }
+        }
+        
         videoRecorder.stopRecording { [weak self] videoURL, metadataURL in
             guard let self = self else { return }
             DispatchQueue.main.async {
                 self.isRecording = false
+                if anyLowDetections {
+                   self.shouldShowLowDetectionWarning = true
+                }
+                // Reset counts for next session (keep them visible until next start if desired, 
+                // but user asked to reset "after recording is stopped". 
+                // Usually better to keep them visible for review, but user said "reset".
+                // I'll reset them here so they clear out.)
+                self.resetTagDetectionCounts()
+                self.showTagDetectionCounts = false
             }
             
             if let videoURL = videoURL, let metadataURL = metadataURL {
@@ -623,14 +711,152 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
             let data = attachment as! Data
             intrinsics = data.withUnsafeBytes { $0.load(as: matrix_float3x3.self) }
         }
-        
+
+        // Capture recording state once (avoids blocking the main thread on recordingQueue.sync).
+        let isRecordingFrame = videoRecorder.recording
         let tags = detector.detect(pixelBuffer: pixelBuffer, tagSizeMeters: tagSizeMeters, intrinsics: intrinsics)
-        DispatchQueue.main.async { self.detectedTags = tags }
+        DispatchQueue.main.async {
+            self.detectedTags = tags
+            if isRecordingFrame {
+                self.bumpTagDetectionCounts(with: tags)
+            }
+        }
         
         // Record frame if recording
-        if videoRecorder.recording {
+        if isRecordingFrame {
             videoRecorder.appendFrame(pixelBuffer: pixelBuffer, sampleBuffer: sampleBuffer, detections: tags, intrinsics: intrinsics)
         }
+    }
+
+    private func resetTagDetectionCounts() {
+        // Initialize all expected tags to 0 so the UI can show missing tags immediately.
+        self.tagDetectionCounts = Dictionary(uniqueKeysWithValues: Self.calibrationJoints.map { ($0.id, 0) })
+    }
+    
+    private func bumpTagDetectionCounts(with tags: [AprilTag3D]) {
+        guard !tagDetectionCounts.isEmpty else { return }
+        
+        // Count at most once per frame per tag ID.
+        let idsInFrame = Set(tags.map { $0.id })
+        var next = tagDetectionCounts
+        let target = self.requiredDetectionsPerTag
+        for id in idsInFrame {
+            guard let current = next[id] else { continue } // only expected tags
+            guard current < target else { continue }       // saturate at target
+            next[id] = min(target, current + 1)
+        }
+        if next != tagDetectionCounts {
+            tagDetectionCounts = next
+        }
+    }
+}
+
+// MARK: - Tag Detection Tracker UI
+struct TagDetectionTrackerView: View {
+    let joints: [AppModel.CalibrationJoint]
+    let counts: [Int: Int]
+    let targetDetections: Int
+    let showCounts: Bool
+    
+    var body: some View {
+        // Prefer slightly wider chips (so "Shoulder" fits), but never overflow the available width.
+        ViewThatFits(in: .horizontal) {
+            tracker(chipWidth: 38)
+            tracker(chipWidth: 36)
+            tracker(chipWidth: 32)
+        }
+    }
+    
+    @ViewBuilder
+    private func tracker(chipWidth: CGFloat) -> some View {
+        let leftJoints = [joints[1], joints[3], joints[5], joints[7]] // LSh, LElb, LHip, LKnee
+        let pelvis = joints[0]
+        let rightJoints = [joints[2], joints[4], joints[6], joints[8]] // RSh, RElb, RHip, RKnee
+        
+        let chipSpacing: CGFloat = 1
+        let groupPadding: CGFloat = 2
+        let groupCorner: CGFloat = 6
+        let outerSpacing: CGFloat = 6
+        let outerPadding: CGFloat = 2
+        
+        HStack(spacing: outerSpacing) {
+            // Left Group (Blue)
+            HStack(spacing: chipSpacing) {
+                ForEach(leftJoints) { j in
+                    MiniChip(joint: j, count: counts[j.id] ?? 0, target: targetDetections, show: showCounts, width: chipWidth)
+                }
+            }
+            .padding(groupPadding)
+            .background(Color.blue.opacity(0.3))
+            .cornerRadius(groupCorner)
+            
+            // Center (Pelvis)
+            MiniChip(joint: pelvis, count: counts[pelvis.id] ?? 0, target: targetDetections, show: showCounts, width: chipWidth)
+                .padding(groupPadding)
+                .background(Color.white.opacity(0.2))
+                .cornerRadius(groupCorner)
+            
+            // Right Group (Green)
+            HStack(spacing: chipSpacing) {
+                ForEach(rightJoints) { j in
+                    MiniChip(joint: j, count: counts[j.id] ?? 0, target: targetDetections, show: showCounts, width: chipWidth)
+                }
+            }
+            .padding(groupPadding)
+            .background(Color.green.opacity(0.3))
+            .cornerRadius(groupCorner)
+        }
+        .padding(outerPadding)
+        .background(Color.black.opacity(0.5))
+        .cornerRadius(10)
+    }
+}
+
+private struct MiniChip: View {
+    let joint: AppModel.CalibrationJoint
+    let count: Int
+    let target: Int
+    let show: Bool
+    let width: CGFloat
+    
+    var body: some View {
+        let clamped = min(max(count, 0), target)
+        let done = clamped >= target
+        let progress = (show && target > 0) ? (CGFloat(clamped) / CGFloat(target)) : 0.0
+        let barWidth = max(0, width - 6)
+        
+        VStack(spacing: 0) {
+            Text(joint.label)
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .allowsTightening(true)
+                .frame(height: 10)
+            
+            if show {
+                Text("\(clamped)")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(height: 10)
+            } else {
+                Text("#\(joint.id + 1)")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(height: 10)
+            }
+            
+            // Tiny progress bar
+            ZStack(alignment: .leading) {
+                Color.white.opacity(0.2)
+                Color.white.opacity(0.9).frame(width: barWidth * progress)
+            }
+            .frame(width: barWidth, height: 2)
+            .padding(.top, 2)
+        }
+        .frame(width: width, height: 28)
+        .background((show ? (done ? Color.green : Color.red) : Color.gray).opacity(0.5))
+        .cornerRadius(4)
     }
 }
 

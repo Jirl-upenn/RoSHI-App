@@ -29,6 +29,12 @@ class FileTransferService {
     private let connectionTimeout: TimeInterval = 5.0 // Timeout after 5 seconds of trying
     private var imuStartSignalSent: Bool = false // Track if start signal has been sent in this session
     
+    // Connection liveness
+    // NWConnection can remain `.ready` after the remote process is killed unless we attempt a read/write.
+    // We run a tiny receive loop to detect remote FIN/RST and update UI promptly.
+    private var activeConnectionToken = UUID()
+    private var receiveLoopStartedForToken: UUID?
+    
     // Direct connection
     var receiverHost: String = ""
     var receiverPort: UInt16 = 50000
@@ -55,11 +61,14 @@ class FileTransferService {
         // Cancel existing connection if any
         connection?.cancel()
         connection = nil
+        activeConnectionToken = UUID()
+        receiveLoopStartedForToken = nil
         
         let parameters = NWParameters.tcp
         
         connection = NWConnection(to: endpoint, using: parameters)
         connectionStartTime = Date()
+        let token = activeConnectionToken
         
         connection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -84,6 +93,7 @@ class FileTransferService {
                 print("✓ Connected to receiver")
                 newConnectedState = true
                 self.connectionStartTime = nil
+                self.startReceiveLoopIfNeeded(token: token)
             case .failed(let error):
                 print("✗ Connection failed: \(error)")
                 self.connection = nil
@@ -112,6 +122,41 @@ class FileTransferService {
         }
         
         connection?.start(queue: transferQueue)
+    }
+    
+    private func startReceiveLoopIfNeeded(token: UUID) {
+        // Prevent multiple concurrent receive loops for the same connection instance.
+        guard receiveLoopStartedForToken != token else { return }
+        receiveLoopStartedForToken = token
+        startReceiveLoop(token: token)
+    }
+    
+    private func startReceiveLoop(token: UUID) {
+        guard token == activeConnectionToken, let conn = connection else { return }
+        
+        // Receiver doesn't send data; we only use this to detect remote close/error promptly.
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            guard token == self.activeConnectionToken else { return } // stale connection
+            
+            if let error = error {
+                print("✗ Receive error (treat as disconnected): \(error)")
+                conn.cancel()
+                return
+            }
+            
+            if isComplete {
+                print("✗ Receiver closed connection (treat as disconnected)")
+                conn.cancel()
+                return
+            }
+            
+            if let data, !data.isEmpty {
+                print("ℹ Ignoring unexpected \(data.count) byte(s) from receiver")
+            }
+            
+            self.startReceiveLoop(token: token)
+        }
     }
     
     func connectDirect(host: String, port: UInt16) {
@@ -447,6 +492,8 @@ class FileTransferService {
     
     func disconnect() {
         stopConnectionChecks()
+        activeConnectionToken = UUID()
+        receiveLoopStartedForToken = nil
         connection?.cancel()
         connection = nil
         isConnected = false
