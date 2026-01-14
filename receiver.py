@@ -8,7 +8,8 @@ import socket
 import struct
 import os
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from zeroconf import ServiceInfo, Zeroconf
 import threading
 
@@ -128,6 +129,25 @@ class ROSHIReceiver:
                 # Check if it's a control signal
                 if first_byte == 2:
                     print("  📡 Control Signal: START_IMU_RECORDING (signal 2)")
+                    # Continue to next message
+                    continue
+                elif first_byte == 4:
+                    ts_data = self._recv_exact(client_socket, 8)
+                    if not ts_data:
+                        print("  📡 Control Signal: START_IMU_RECORDING (signal 4, missing timestamp)")
+                        break
+                    sent_ts_ns = struct.unpack('>Q', ts_data)[0]
+                    recv_ts_ns = time.time_ns()
+                    delta_ms = (recv_ts_ns - sent_ts_ns) / 1e6
+                    sent_iso = datetime.fromtimestamp(sent_ts_ns / 1e9, tz=timezone.utc).isoformat()
+                    recv_iso = datetime.fromtimestamp(recv_ts_ns / 1e9, tz=timezone.utc).isoformat()
+                    print(
+                        "  📡 Control Signal: START_IMU_RECORDING "
+                        "(signal 4)"
+                    )
+                    print(f"      sender_utc_ns={sent_ts_ns} ({sent_iso})")
+                    print(f"      receiver_utc_ns={recv_ts_ns} ({recv_iso})")
+                    print(f"      delta_ms={delta_ms:+.2f} (receiver - sender; clock skew possible)")
                     # Continue to next message
                     continue
                 elif first_byte == 3:

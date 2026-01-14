@@ -28,6 +28,9 @@ class FileTransferService {
     private var connectionStartTime: Date?
     private let connectionTimeout: TimeInterval = 5.0 // Timeout after 5 seconds of trying
     private var imuStartSignalSent: Bool = false // Track if start signal has been sent in this session
+    private let startSignalLegacy: UInt8 = 2
+    private let startSignalWithTimestamp: UInt8 = 4
+    private let stopSignal: UInt8 = 3
     
     // Connection liveness
     // NWConnection can remain `.ready` after the remote process is killed unless we attempt a read/write.
@@ -49,7 +52,9 @@ class FileTransferService {
     
     // Simple protocol:
     // Control signals (1 byte):
-    //   2 = start IMU recording (IMU continues recording until manually stopped)
+    //   2 = start IMU recording (legacy, no timestamp)
+    //   4 = start IMU recording with timestamp (8-byte unix ns, big-endian)
+    //   3 = stop IMU recording
     // File transfer:
     //   1. Send file type (1 byte: 0=video, 1=metadata)
     //   2. Send filename length (4 bytes, big-endian)
@@ -165,18 +170,26 @@ class FileTransferService {
     }
     
     // Send control signal to receiver (for IMU recording start)
-    func sendControlSignal(_ signal: UInt8) {
+    func sendControlSignal(_ signal: UInt8, timestampNs: UInt64? = nil) {
         guard let conn = connection, conn.state == .ready else {
             print("⚠ Cannot send control signal: connection not ready")
             return
         }
         
-        let signalData = Data([signal])
-        print("📡 Sending control signal: START_IMU_RECORDING")
+        var payload = Data([signal])
+        if let timestampNs = timestampNs {
+            var beTimestamp = timestampNs.bigEndian
+            withUnsafeBytes(of: &beTimestamp) { bytes in
+                payload.append(contentsOf: bytes)
+            }
+        }
+        let signalName = controlSignalName(signal)
+        let tsSuffix = timestampNs.map { " ts_ns=\($0)" } ?? ""
+        print("📡 Sending control signal: \(signalName)\(tsSuffix)")
         
         // Send immediately on the transfer queue for minimal delay
         transferQueue.async {
-            conn.send(content: signalData, completion: .contentProcessed { error in
+            conn.send(content: payload, completion: .contentProcessed { error in
                 if let error = error {
                     print("✗ Control signal send error: \(error)")
                 } else {
@@ -193,12 +206,28 @@ class FileTransferService {
             return
         }
         
-        sendControlSignal(2) // 2 = start IMU recording
+        let timestampNs = currentUnixTimeNs()
+        sendControlSignal(startSignalWithTimestamp, timestampNs: timestampNs)
         imuStartSignalSent = true
     }
     
     func sendStopRecordingSignal() {
-        sendControlSignal(3) // 3 = stop IMU recording
+        sendControlSignal(stopSignal)
+    }
+
+    private func controlSignalName(_ signal: UInt8) -> String {
+        switch signal {
+        case startSignalLegacy, startSignalWithTimestamp:
+            return "START_IMU_RECORDING"
+        case stopSignal:
+            return "STOP_IMU_RECORDING"
+        default:
+            return "UNKNOWN(\(signal))"
+        }
+    }
+
+    private func currentUnixTimeNs() -> UInt64 {
+        return UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
     }
     
     func setReceiver(host: String, port: UInt16) {
