@@ -79,6 +79,7 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
+				ORGANIZATIONNAME = "Luyang Hu (JIRL-UPENN)";
 				TargetAttributes = {
 					A37BAA1D2F0F36A7007C64AE = {
 						CreatedOnToolsVersion = 26.2;
