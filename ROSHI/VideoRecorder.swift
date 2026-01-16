@@ -6,7 +6,40 @@ struct RecordingMetadata: Codable {
     let resolution: Resolution
     let fps: Double
     let cameraIntrinsics: CodableMatrix3x3?
+    /// Suggested calibration timing derived on-device from AprilTag detections.
+    /// This is useful to decide how long the calibration segment is (server-side: `--calib-duration-sec`).
+    let calibrationSegment: CalibrationSegment?
     let frames: [FrameMetadata]
+}
+
+struct CalibrationSegment: Codable {
+    /// How this segment marker was computed.
+    /// - `all_required_tags_first_seen`: first time when all required tags have been observed at least once
+    let method: String
+
+    /// Tag IDs that must be detected (0..8 for pelvis/shoulders/elbows/hips/knees).
+    let requiredTagIds: [Int]
+
+    /// TimestampSeconds of the first recorded frame (UTC seconds since epoch).
+    let recordingStartTimestampSeconds: Double?
+
+    /// True if we have seen all required tags at least once (possibly across multiple frames).
+    let allRequiredTagsSeen: Bool
+    let missingTagIds: [Int]
+
+    /// First moment the recording has cumulatively seen all required tags.
+    let allRequiredTagsSeenFrameIndex: Int?
+    let allRequiredTagsSeenTimestampSeconds: Double?
+    let allRequiredTagsSeenElapsedSec: Double?
+
+    /// Convenience: recommended value to use for server-side `--calib-duration-sec`.
+    let suggestedCalibDurationSec: Double?
+
+    /// First moment a single frame contains *all* required tags simultaneously.
+    let allRequiredTagsPresentInFrame: Bool
+    let allRequiredTagsPresentInFrameFrameIndex: Int?
+    let allRequiredTagsPresentInFrameTimestampSeconds: Double?
+    let allRequiredTagsPresentInFrameElapsedSec: Double?
 }
 
 struct Resolution: Codable {
@@ -64,6 +97,18 @@ class VideoRecorder {
     private var recordingIntrinsics: CodableMatrix3x3?
     private var sessionStarted = false
     private var framesWritten = 0
+
+    // AprilTag coverage tracking for calibration segment marking.
+    // Tag IDs used by the server calibration pipeline:
+    // 0: pelvis, 1: left-shoulder, 2: right-shoulder, 3: left-elbow, 4: right-elbow,
+    // 5: left-hip, 6: right-hip, 7: left-knee, 8: right-knee
+    private let requiredTagIds: Set<Int> = Set([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    private var seenTagIds: Set<Int> = []
+    private var recordingStartTimestampSeconds: Double?
+    private var allRequiredTagsSeenTimestampSeconds: Double?
+    private var allRequiredTagsSeenFrameIndex: Int?
+    private var allRequiredTagsPresentInFrameTimestampSeconds: Double?
+    private var allRequiredTagsPresentInFrameFrameIndex: Int?
     
     init() {
         ciContext = CIContext(options: [.useSoftwareRenderer: false])
@@ -125,6 +170,12 @@ class VideoRecorder {
                 self.recordingIntrinsics = nil // Will be set on first frame
                 self.sessionStarted = false
                 self.framesWritten = 0
+                self.seenTagIds = []
+                self.recordingStartTimestampSeconds = nil
+                self.allRequiredTagsSeenTimestampSeconds = nil
+                self.allRequiredTagsSeenFrameIndex = nil
+                self.allRequiredTagsPresentInFrameTimestampSeconds = nil
+                self.allRequiredTagsPresentInFrameFrameIndex = nil
                 
                 print("Recording started: \(videoURL.path)")
                 print("Metadata will be saved to: \(metadataURL.path)")
@@ -217,6 +268,22 @@ class VideoRecorder {
                     ),
                     distance: tag.distance
                 )
+            }
+
+            // Update calibration-segment markers based on which tags we've seen so far.
+            if self.recordingStartTimestampSeconds == nil {
+                self.recordingStartTimestampSeconds = timestamp
+            }
+            let idsInFrame = Set(tagDetections.map { $0.id })
+            self.seenTagIds.formUnion(idsInFrame)
+
+            if self.allRequiredTagsSeenTimestampSeconds == nil && self.requiredTagIds.isSubset(of: self.seenTagIds) {
+                self.allRequiredTagsSeenTimestampSeconds = timestamp
+                self.allRequiredTagsSeenFrameIndex = self.frameIndex
+            }
+            if self.allRequiredTagsPresentInFrameTimestampSeconds == nil && idsInFrame.isSuperset(of: self.requiredTagIds) {
+                self.allRequiredTagsPresentInFrameTimestampSeconds = timestamp
+                self.allRequiredTagsPresentInFrameFrameIndex = self.frameIndex
             }
             
             // Store intrinsics only once (on first frame)
@@ -315,11 +382,36 @@ class VideoRecorder {
                         width: Int(self.recordingResolution?.width ?? 0),
                         height: Int(self.recordingResolution?.height ?? 0)
                     )
+
+                    let required = Array(self.requiredTagIds).sorted()
+                    let missing = Array(self.requiredTagIds.subtracting(self.seenTagIds)).sorted()
+                    let startTs = self.recordingStartTimestampSeconds
+                    let allSeenTs = self.allRequiredTagsSeenTimestampSeconds
+                    let allSeenElapsed = (startTs != nil && allSeenTs != nil) ? (allSeenTs! - startTs!) : nil
+                    let presentTs = self.allRequiredTagsPresentInFrameTimestampSeconds
+                    let presentElapsed = (startTs != nil && presentTs != nil) ? (presentTs! - startTs!) : nil
+
+                    let calibSegment = CalibrationSegment(
+                        method: "all_required_tags_first_seen",
+                        requiredTagIds: required,
+                        recordingStartTimestampSeconds: startTs,
+                        allRequiredTagsSeen: missing.isEmpty,
+                        missingTagIds: missing,
+                        allRequiredTagsSeenFrameIndex: self.allRequiredTagsSeenFrameIndex,
+                        allRequiredTagsSeenTimestampSeconds: allSeenTs,
+                        allRequiredTagsSeenElapsedSec: allSeenElapsed,
+                        suggestedCalibDurationSec: allSeenElapsed,
+                        allRequiredTagsPresentInFrame: presentTs != nil,
+                        allRequiredTagsPresentInFrameFrameIndex: self.allRequiredTagsPresentInFrameFrameIndex,
+                        allRequiredTagsPresentInFrameTimestampSeconds: presentTs,
+                        allRequiredTagsPresentInFrameElapsedSec: presentElapsed
+                    )
                     
                     let recordingMetadata = RecordingMetadata(
                         resolution: resolution,
                         fps: self.recordingFPS,
                         cameraIntrinsics: self.recordingIntrinsics,
+                        calibrationSegment: calibSegment,
                         frames: self.metadata
                     )
                     

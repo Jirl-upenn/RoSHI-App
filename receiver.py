@@ -128,7 +128,7 @@ class ROSHIReceiver:
                 
                 # Check if it's a control signal
                 if first_byte == 2:
-                    print("  📡 Control Signal: START_IMU_RECORDING (signal 2)")
+                    print("  📡 Control Signal: START_IMU_RECORDING (signal 2, legacy: no timestamp)")
                     # Continue to next message
                     continue
                 elif first_byte == 4:
