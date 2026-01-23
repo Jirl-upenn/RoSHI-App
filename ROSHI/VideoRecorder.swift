@@ -4,7 +4,10 @@ import CoreImage
 
 struct RecordingMetadata: Codable {
     let resolution: Resolution
-    let fps: Double
+    let fps: Double  // Requested FPS setting
+    let actualFps: Double?  // Actual achieved FPS (frames written / duration)
+    let framesWritten: Int?
+    let framesDropped: Int?
     let cameraIntrinsics: CodableMatrix3x3?
     /// Suggested calibration timing derived on-device from AprilTag detections.
     /// This is useful to decide how long the calibration segment is (server-side: `--calib-duration-sec`).
@@ -97,6 +100,7 @@ class VideoRecorder {
     private var recordingIntrinsics: CodableMatrix3x3?
     private var sessionStarted = false
     private var framesWritten = 0
+    private var framesDropped = 0  // Track dropped frames for debugging
 
     // AprilTag coverage tracking for calibration segment marking.
     // Tag IDs used by the server calibration pipeline:
@@ -170,6 +174,7 @@ class VideoRecorder {
                 self.recordingIntrinsics = nil // Will be set on first frame
                 self.sessionStarted = false
                 self.framesWritten = 0
+                self.framesDropped = 0
                 self.seenTagIds = []
                 self.recordingStartTimestampSeconds = nil
                 self.allRequiredTagsSeenTimestampSeconds = nil
@@ -187,13 +192,49 @@ class VideoRecorder {
     }
     
     func appendFrame(pixelBuffer: CVPixelBuffer, sampleBuffer: CMSampleBuffer, detections: [AprilTag3D], intrinsics: matrix_float3x3?) {
-        // IMPORTANT: Extract presentation time SYNCHRONOUSLY before async dispatch
+        // IMPORTANT: Capture ALL timing-sensitive data SYNCHRONOUSLY before async dispatch
         // CMSampleBuffer is recycled after this callback returns!
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        
+        // Capture UTC timestamp NOW (when camera delivers frame), not later when async runs
+        let captureTime = Date()
+        let captureTimestamp = captureTime.timeIntervalSince1970
+        
+        // Pre-format the ISO timestamp synchronously
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let captureTimeISO = isoFormatter.string(from: captureTime)
         
         // Create CIImage synchronously to capture the pixel data
         // CIImage holds a reference to the pixel buffer data
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        
+        // Pre-convert detections to codable format synchronously
+        // This ensures the tag data matches the exact frame being processed
+        let tagDetections = detections.map { tag -> TagDetection in
+            let rotation = tag.rotation
+            return TagDetection(
+                id: tag.id,
+                center: CodablePoint(x: tag.center.x, y: tag.center.y),
+                corners: tag.corners.map { CodablePoint(x: $0.x, y: $0.y) },
+                position: CodableVector3(x: tag.position.x, y: tag.position.y, z: tag.position.z),
+                rotation: CodableMatrix3x3(
+                    m11: rotation.columns.0.x, m12: rotation.columns.1.x, m13: rotation.columns.2.x,
+                    m21: rotation.columns.0.y, m22: rotation.columns.1.y, m23: rotation.columns.2.y,
+                    m31: rotation.columns.0.z, m32: rotation.columns.1.z, m33: rotation.columns.2.z
+                ),
+                distance: tag.distance
+            )
+        }
+        
+        // Pre-convert intrinsics if available
+        let codableIntrinsics: CodableMatrix3x3? = intrinsics.map { intr in
+            CodableMatrix3x3(
+                m11: intr.columns.0.x, m12: intr.columns.1.x, m13: intr.columns.2.x,
+                m21: intr.columns.0.y, m22: intr.columns.1.y, m23: intr.columns.2.y,
+                m31: intr.columns.0.z, m32: intr.columns.1.z, m33: intr.columns.2.z
+            )
+        }
         
         recordingQueue.async {
             guard self._isRecording,
@@ -204,7 +245,8 @@ class VideoRecorder {
             
             // Check if pixel buffer pool is available
             guard let pixelBufferPool = adaptor.pixelBufferPool else {
-                print("Pixel buffer pool not ready yet, skipping frame")
+                print("⚠️ FRAME DROPPED: Pixel buffer pool not ready yet")
+                self.framesDropped += 1
                 return
             }
             
@@ -225,7 +267,8 @@ class VideoRecorder {
             )
             
             guard createStatus == kCVReturnSuccess, let bgra = bgraBuffer else {
-                print("Failed to create pixel buffer, status: \(createStatus)")
+                print("⚠️ FRAME DROPPED: Failed to create pixel buffer, status: \(createStatus)")
+                self.framesDropped += 1
                 return
             }
             
@@ -234,71 +277,51 @@ class VideoRecorder {
             
             // Append frame - check if input is ready
             guard input.isReadyForMoreMediaData else {
-                print("Input not ready for more data, skipping frame \(self.frameIndex)")
+                print("⚠️ FRAME DROPPED: Encoder backpressure (input not ready), frame would be \(self.frameIndex)")
+                self.framesDropped += 1
                 return
             }
             
             let appendSuccess = adaptor.append(bgra, withPresentationTime: presentationTime)
             if !appendSuccess {
-                print("Failed to append frame \(self.frameIndex), writer status: \(writer.status.rawValue)")
+                print("⚠️ FRAME DROPPED: Append failed for frame \(self.frameIndex), writer status: \(writer.status.rawValue)")
                 if let error = writer.error {
-                    print("Writer error: \(error)")
+                    print("   Writer error: \(error)")
                 }
+                self.framesDropped += 1
                 return
             }
             self.framesWritten += 1
             
-            // Store metadata
-            let utcTime = Date()
-            let timestamp = utcTime.timeIntervalSince1970
-            let isoFormatter = ISO8601DateFormatter()
-            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            // SUCCESS: Frame was written to video, now save matching metadata
+            // All data below was captured SYNCHRONOUSLY when camera delivered the frame,
+            // ensuring perfect alignment between video frame and metadata.
             
-            let tagDetections = detections.map { tag -> TagDetection in
-                let rotation = tag.rotation
-                return TagDetection(
-                    id: tag.id,
-                    center: CodablePoint(x: tag.center.x, y: tag.center.y),
-                    corners: tag.corners.map { CodablePoint(x: $0.x, y: $0.y) },
-                    position: CodableVector3(x: tag.position.x, y: tag.position.y, z: tag.position.z),
-                    rotation: CodableMatrix3x3(
-                        m11: rotation.columns.0.x, m12: rotation.columns.1.x, m13: rotation.columns.2.x,
-                        m21: rotation.columns.0.y, m22: rotation.columns.1.y, m23: rotation.columns.2.y,
-                        m31: rotation.columns.0.z, m32: rotation.columns.1.z, m33: rotation.columns.2.z
-                    ),
-                    distance: tag.distance
-                )
-            }
-
             // Update calibration-segment markers based on which tags we've seen so far.
             if self.recordingStartTimestampSeconds == nil {
-                self.recordingStartTimestampSeconds = timestamp
+                self.recordingStartTimestampSeconds = captureTimestamp
             }
             let idsInFrame = Set(tagDetections.map { $0.id })
             self.seenTagIds.formUnion(idsInFrame)
 
             if self.allRequiredTagsSeenTimestampSeconds == nil && self.requiredTagIds.isSubset(of: self.seenTagIds) {
-                self.allRequiredTagsSeenTimestampSeconds = timestamp
+                self.allRequiredTagsSeenTimestampSeconds = captureTimestamp
                 self.allRequiredTagsSeenFrameIndex = self.frameIndex
             }
             if self.allRequiredTagsPresentInFrameTimestampSeconds == nil && idsInFrame.isSuperset(of: self.requiredTagIds) {
-                self.allRequiredTagsPresentInFrameTimestampSeconds = timestamp
+                self.allRequiredTagsPresentInFrameTimestampSeconds = captureTimestamp
                 self.allRequiredTagsPresentInFrameFrameIndex = self.frameIndex
             }
             
             // Store intrinsics only once (on first frame)
-            if self.recordingIntrinsics == nil, let intrinsics = intrinsics {
-                self.recordingIntrinsics = CodableMatrix3x3(
-                    m11: intrinsics.columns.0.x, m12: intrinsics.columns.1.x, m13: intrinsics.columns.2.x,
-                    m21: intrinsics.columns.0.y, m22: intrinsics.columns.1.y, m23: intrinsics.columns.2.y,
-                    m31: intrinsics.columns.0.z, m32: intrinsics.columns.1.z, m33: intrinsics.columns.2.z
-                )
+            if self.recordingIntrinsics == nil, let intr = codableIntrinsics {
+                self.recordingIntrinsics = intr
             }
             
             let frameMeta = FrameMetadata(
                 frameIndex: self.frameIndex,
-                utcTimestamp: isoFormatter.string(from: utcTime),
-                timestampSeconds: timestamp,
+                utcTimestamp: captureTimeISO,
+                timestampSeconds: captureTimestamp,
                 detections: tagDetections
             )
             
@@ -329,7 +352,31 @@ class VideoRecorder {
             
             // Check if we actually wrote any frames
             let framesWrittenCount = self.framesWritten
-            print("Stopping recording. Frames written: \(framesWrittenCount), session started: \(self.sessionStarted)")
+            let framesDroppedCount = self.framesDropped
+            let metadataCount = self.metadata.count
+            
+            print("Stopping recording:")
+            print("  Frames written to video: \(framesWrittenCount)")
+            print("  Frames dropped: \(framesDroppedCount)")
+            print("  Metadata entries: \(metadataCount)")
+            print("  Session started: \(self.sessionStarted)")
+            
+            // Validate alignment
+            if framesWrittenCount != metadataCount {
+                print("❌ ALIGNMENT ERROR: Video frames (\(framesWrittenCount)) != Metadata entries (\(metadataCount))")
+                print("   This indicates a bug in the recorder - please report!")
+            } else {
+                print("✅ Video and metadata are aligned (\(framesWrittenCount) frames)")
+            }
+            
+            if framesDroppedCount > 0 {
+                let totalAttempted = framesWrittenCount + framesDroppedCount
+                let dropRate = Double(framesDroppedCount) / Double(totalAttempted) * 100.0
+                print("⚠️ Drop rate: \(String(format: "%.1f", dropRate))% (\(framesDroppedCount)/\(totalAttempted))")
+                if dropRate > 10 {
+                    print("   High drop rate may indicate CPU/encoder overload. Try lower resolution or FPS.")
+                }
+            }
             
             // Need at least some frames for a valid video
             if framesWrittenCount == 0 || !self.sessionStarted {
@@ -407,13 +454,33 @@ class VideoRecorder {
                         allRequiredTagsPresentInFrameElapsedSec: presentElapsed
                     )
                     
+                    // Calculate actual achieved FPS from timestamps
+                    var actualFps: Double? = nil
+                    if self.metadata.count >= 2 {
+                        let firstTs = self.metadata.first!.timestampSeconds
+                        let lastTs = self.metadata.last!.timestampSeconds
+                        let duration = lastTs - firstTs
+                        if duration > 0 {
+                            actualFps = Double(self.metadata.count - 1) / duration
+                        }
+                    }
+                    
                     let recordingMetadata = RecordingMetadata(
                         resolution: resolution,
                         fps: self.recordingFPS,
+                        actualFps: actualFps,
+                        framesWritten: framesWrittenCount,
+                        framesDropped: framesDroppedCount,
                         cameraIntrinsics: self.recordingIntrinsics,
                         calibrationSegment: calibSegment,
                         frames: self.metadata
                     )
+                    
+                    // Log actual vs requested FPS
+                    if let actual = actualFps {
+                        let fpsRatio = actual / self.recordingFPS * 100.0
+                        print("Actual FPS: \(String(format: "%.1f", actual)) (\(String(format: "%.0f", fpsRatio))% of requested \(self.recordingFPS))")
+                    }
                     
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
