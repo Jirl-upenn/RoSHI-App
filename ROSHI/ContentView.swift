@@ -579,7 +579,11 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         
         let resolution = CGSize(width: videoW, height: videoH)
         let currentFPS = cameraManager.currentFPS
-        videoRecorder.startRecording(resolution: resolution, fps: currentFPS)
+        videoRecorder.startRecording(
+            resolution: resolution,
+            fps: currentFPS,
+            minDetectionsPerTagForSuggestion: requiredDetectionsPerTag
+        )
         DispatchQueue.main.async {
             self.isRecording = true
             self.showTagDetectionCounts = true
