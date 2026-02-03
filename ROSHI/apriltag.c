@@ -356,7 +356,7 @@ apriltag_detector_t *apriltag_detector_create()
 {
     apriltag_detector_t *td = (apriltag_detector_t*) calloc(1, sizeof(apriltag_detector_t));
 
-    td->nthreads = 1;
+    td->nthreads = 4;
     td->quad_decimate = 2.0;
     td->quad_sigma = 0.0;
 

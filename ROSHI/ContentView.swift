@@ -181,10 +181,10 @@ struct ContentView: View {
                         let current = model.requiredDetectionsPerTag
                         let next: Int
                         switch current {
+                        case 50: next = 100
                         case 100: next = 200
-                        case 200: next = 300
-                        case 300: next = 100
-                        default: next = 200
+                        case 200: next = 50
+                        default: next = 100
                         }
                         model.requiredDetectionsPerTag = next
                     }) {
