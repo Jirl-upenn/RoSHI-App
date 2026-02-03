@@ -38,6 +38,15 @@ struct CalibrationSegment: Codable {
     /// Convenience: recommended value to use for server-side `--calib-duration-sec`.
     let suggestedCalibDurationSec: Double?
 
+    /// If provided, this was the per-tag minimum detection threshold used to compute an optional
+    /// stronger calibration suggestion based on "enough frames per tag", not just first-seen.
+    let minDetectionsPerTag: Int?
+    /// True if every required tag reached `minDetectionsPerTag` detections (counted once per frame).
+    let allRequiredTagsHaveMinDetections: Bool?
+    let allRequiredTagsHaveMinDetectionsFrameIndex: Int?
+    let allRequiredTagsHaveMinDetectionsTimestampSeconds: Double?
+    let allRequiredTagsHaveMinDetectionsElapsedSec: Double?
+
     /// First moment a single frame contains *all* required tags simultaneously.
     let allRequiredTagsPresentInFrame: Bool
     let allRequiredTagsPresentInFrameFrameIndex: Int?
@@ -113,12 +122,18 @@ class VideoRecorder {
     private var allRequiredTagsSeenFrameIndex: Int?
     private var allRequiredTagsPresentInFrameTimestampSeconds: Double?
     private var allRequiredTagsPresentInFrameFrameIndex: Int?
+
+    // Optional: "enough detections per tag" tracking to make suggestedCalibDurationSec robust.
+    private var minDetectionsPerTagForSuggestion: Int = 0
+    private var tagFrameCounts: [Int: Int] = [:]
+    private var allRequiredTagsHaveMinDetectionsTimestampSeconds: Double?
+    private var allRequiredTagsHaveMinDetectionsFrameIndex: Int?
     
     init() {
         ciContext = CIContext(options: [.useSoftwareRenderer: false])
     }
     
-    func startRecording(resolution: CGSize, fps: Double = 30.0) {
+    func startRecording(resolution: CGSize, fps: Double = 30.0, minDetectionsPerTagForSuggestion: Int = 0) {
         // Use serial queue - no barrier needed
         recordingQueue.async {
             guard !self._isRecording else { return }
@@ -181,6 +196,12 @@ class VideoRecorder {
                 self.allRequiredTagsSeenFrameIndex = nil
                 self.allRequiredTagsPresentInFrameTimestampSeconds = nil
                 self.allRequiredTagsPresentInFrameFrameIndex = nil
+
+                // Tag coverage thresholds for calibration recommendation.
+                self.minDetectionsPerTagForSuggestion = max(0, minDetectionsPerTagForSuggestion)
+                self.tagFrameCounts = Dictionary(uniqueKeysWithValues: self.requiredTagIds.map { ($0, 0) })
+                self.allRequiredTagsHaveMinDetectionsTimestampSeconds = nil
+                self.allRequiredTagsHaveMinDetectionsFrameIndex = nil
                 
                 print("Recording started: \(videoURL.path)")
                 print("Metadata will be saved to: \(metadataURL.path)")
@@ -303,6 +324,22 @@ class VideoRecorder {
             }
             let idsInFrame = Set(tagDetections.map { $0.id })
             self.seenTagIds.formUnion(idsInFrame)
+
+            // Maintain per-tag counts (at most once per frame) for a stronger suggestion signal.
+            if self.minDetectionsPerTagForSuggestion > 0 {
+                for id in idsInFrame {
+                    if self.requiredTagIds.contains(id) {
+                        self.tagFrameCounts[id, default: 0] += 1
+                    }
+                }
+                if self.allRequiredTagsHaveMinDetectionsTimestampSeconds == nil {
+                    let ok = self.requiredTagIds.allSatisfy { (self.tagFrameCounts[$0] ?? 0) >= self.minDetectionsPerTagForSuggestion }
+                    if ok {
+                        self.allRequiredTagsHaveMinDetectionsTimestampSeconds = captureTimestamp
+                        self.allRequiredTagsHaveMinDetectionsFrameIndex = self.frameIndex
+                    }
+                }
+            }
 
             if self.allRequiredTagsSeenTimestampSeconds == nil && self.requiredTagIds.isSubset(of: self.seenTagIds) {
                 self.allRequiredTagsSeenTimestampSeconds = captureTimestamp
@@ -438,8 +475,16 @@ class VideoRecorder {
                     let presentTs = self.allRequiredTagsPresentInFrameTimestampSeconds
                     let presentElapsed = (startTs != nil && presentTs != nil) ? (presentTs! - startTs!) : nil
 
+                    let minDetections = self.minDetectionsPerTagForSuggestion > 0 ? self.minDetectionsPerTagForSuggestion : nil
+                    let minDetTs = self.allRequiredTagsHaveMinDetectionsTimestampSeconds
+                    let minDetElapsed = (startTs != nil && minDetTs != nil) ? (minDetTs! - startTs!) : nil
+                    let hasMinDet = minDetTs != nil
+                    let method = hasMinDet ? "per_tag_min_detections" : "all_required_tags_first_seen"
+                    // Only suggest a duration when we have a meaningful "enough frames per tag" signal.
+                    let suggested = hasMinDet ? minDetElapsed : nil
+
                     let calibSegment = CalibrationSegment(
-                        method: "all_required_tags_first_seen",
+                        method: method,
                         requiredTagIds: required,
                         recordingStartTimestampSeconds: startTs,
                         allRequiredTagsSeen: missing.isEmpty,
@@ -447,7 +492,12 @@ class VideoRecorder {
                         allRequiredTagsSeenFrameIndex: self.allRequiredTagsSeenFrameIndex,
                         allRequiredTagsSeenTimestampSeconds: allSeenTs,
                         allRequiredTagsSeenElapsedSec: allSeenElapsed,
-                        suggestedCalibDurationSec: allSeenElapsed,
+                        suggestedCalibDurationSec: suggested,
+                        minDetectionsPerTag: minDetections,
+                        allRequiredTagsHaveMinDetections: hasMinDet,
+                        allRequiredTagsHaveMinDetectionsFrameIndex: self.allRequiredTagsHaveMinDetectionsFrameIndex,
+                        allRequiredTagsHaveMinDetectionsTimestampSeconds: minDetTs,
+                        allRequiredTagsHaveMinDetectionsElapsedSec: minDetElapsed,
                         allRequiredTagsPresentInFrame: presentTs != nil,
                         allRequiredTagsPresentInFrameFrameIndex: self.allRequiredTagsPresentInFrameFrameIndex,
                         allRequiredTagsPresentInFrameTimestampSeconds: presentTs,
