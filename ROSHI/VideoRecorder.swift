@@ -16,8 +16,7 @@ struct RecordingMetadata: Codable {
 }
 
 struct CalibrationSegment: Codable {
-    /// How this segment marker was computed.
-    /// - `all_required_tags_first_seen`: first time when all required tags have been observed at least once
+    /// Always "per_tag_min_detections". Suggested duration is only set when all tags reach the app target.
     let method: String
 
     /// Tag IDs that must be detected (0..8 for pelvis/shoulders/elbows/hips/knees).
@@ -30,16 +29,15 @@ struct CalibrationSegment: Codable {
     let allRequiredTagsSeen: Bool
     let missingTagIds: [Int]
 
-    /// First moment the recording has cumulatively seen all required tags.
+    /// Deprecated; always nil. Kept for JSON compatibility.
     let allRequiredTagsSeenFrameIndex: Int?
     let allRequiredTagsSeenTimestampSeconds: Double?
     let allRequiredTagsSeenElapsedSec: Double?
 
-    /// Convenience: recommended value to use for server-side `--calib-duration-sec`.
+    /// Recommended value for server-side `--calib-duration-sec`; set only when all tags reached minDetectionsPerTag.
     let suggestedCalibDurationSec: Double?
 
-    /// If provided, this was the per-tag minimum detection threshold used to compute an optional
-    /// stronger calibration suggestion based on "enough frames per tag", not just first-seen.
+    /// Per-tag minimum detection count (app setting, e.g. 200). Used to compute suggestedCalibDurationSec.
     let minDetectionsPerTag: Int?
     /// True if every required tag reached `minDetectionsPerTag` detections (counted once per frame).
     let allRequiredTagsHaveMinDetections: Bool?
@@ -118,8 +116,6 @@ class VideoRecorder {
     private let requiredTagIds: Set<Int> = Set([0, 1, 2, 3, 4, 5, 6, 7, 8])
     private var seenTagIds: Set<Int> = []
     private var recordingStartTimestampSeconds: Double?
-    private var allRequiredTagsSeenTimestampSeconds: Double?
-    private var allRequiredTagsSeenFrameIndex: Int?
     private var allRequiredTagsPresentInFrameTimestampSeconds: Double?
     private var allRequiredTagsPresentInFrameFrameIndex: Int?
 
@@ -192,8 +188,6 @@ class VideoRecorder {
                 self.framesDropped = 0
                 self.seenTagIds = []
                 self.recordingStartTimestampSeconds = nil
-                self.allRequiredTagsSeenTimestampSeconds = nil
-                self.allRequiredTagsSeenFrameIndex = nil
                 self.allRequiredTagsPresentInFrameTimestampSeconds = nil
                 self.allRequiredTagsPresentInFrameFrameIndex = nil
 
@@ -341,10 +335,6 @@ class VideoRecorder {
                 }
             }
 
-            if self.allRequiredTagsSeenTimestampSeconds == nil && self.requiredTagIds.isSubset(of: self.seenTagIds) {
-                self.allRequiredTagsSeenTimestampSeconds = captureTimestamp
-                self.allRequiredTagsSeenFrameIndex = self.frameIndex
-            }
             if self.allRequiredTagsPresentInFrameTimestampSeconds == nil && idsInFrame.isSuperset(of: self.requiredTagIds) {
                 self.allRequiredTagsPresentInFrameTimestampSeconds = captureTimestamp
                 self.allRequiredTagsPresentInFrameFrameIndex = self.frameIndex
@@ -470,8 +460,6 @@ class VideoRecorder {
                     let required = Array(self.requiredTagIds).sorted()
                     let missing = Array(self.requiredTagIds.subtracting(self.seenTagIds)).sorted()
                     let startTs = self.recordingStartTimestampSeconds
-                    let allSeenTs = self.allRequiredTagsSeenTimestampSeconds
-                    let allSeenElapsed = (startTs != nil && allSeenTs != nil) ? (allSeenTs! - startTs!) : nil
                     let presentTs = self.allRequiredTagsPresentInFrameTimestampSeconds
                     let presentElapsed = (startTs != nil && presentTs != nil) ? (presentTs! - startTs!) : nil
 
@@ -479,19 +467,17 @@ class VideoRecorder {
                     let minDetTs = self.allRequiredTagsHaveMinDetectionsTimestampSeconds
                     let minDetElapsed = (startTs != nil && minDetTs != nil) ? (minDetTs! - startTs!) : nil
                     let hasMinDet = minDetTs != nil
-                    let method = hasMinDet ? "per_tag_min_detections" : "all_required_tags_first_seen"
-                    // Only suggest a duration when we have a meaningful "enough frames per tag" signal.
                     let suggested = hasMinDet ? minDetElapsed : nil
 
                     let calibSegment = CalibrationSegment(
-                        method: method,
+                        method: "per_tag_min_detections",
                         requiredTagIds: required,
                         recordingStartTimestampSeconds: startTs,
                         allRequiredTagsSeen: missing.isEmpty,
                         missingTagIds: missing,
-                        allRequiredTagsSeenFrameIndex: self.allRequiredTagsSeenFrameIndex,
-                        allRequiredTagsSeenTimestampSeconds: allSeenTs,
-                        allRequiredTagsSeenElapsedSec: allSeenElapsed,
+                        allRequiredTagsSeenFrameIndex: nil,
+                        allRequiredTagsSeenTimestampSeconds: nil,
+                        allRequiredTagsSeenElapsedSec: nil,
                         suggestedCalibDurationSec: suggested,
                         minDetectionsPerTag: minDetections,
                         allRequiredTagsHaveMinDetections: hasMinDet,
