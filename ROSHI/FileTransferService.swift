@@ -31,6 +31,9 @@ class FileTransferService {
     private let startSignalLegacy: UInt8 = 2
     private let startSignalWithTimestamp: UInt8 = 4
     private let stopSignal: UInt8 = 3
+    private let startSignalWithSession: UInt8 = 5
+    private let stopSignalWithSession: UInt8 = 6
+    private var currentSessionID: UUID?
     
     // Connection liveness
     // NWConnection can remain `.ready` after the remote process is killed unless we attempt a read/write.
@@ -50,17 +53,17 @@ class FileTransferService {
         return isConnected
     }
     
-    // Simple protocol:
-    // Control signals (1 byte):
+    // Protocol:
+    // Control signals:
     //   2 = start IMU recording (legacy, no timestamp)
     //   4 = start IMU recording with timestamp (8-byte unix ns, big-endian)
     //   3 = stop IMU recording
-    // File transfer:
-    //   1. Send file type (1 byte: 0=video, 1=metadata)
-    //   2. Send filename length (4 bytes, big-endian)
-    //   3. Send filename (UTF-8)
-    //   4. Send file size (8 bytes, big-endian)
-    //   5. Send file data
+    //   5 = start IMU recording with timestamp + session UUID [0x05][ts_ns:8][uuid:16]
+    //   6 = stop IMU recording with session UUID              [0x06][uuid:16]
+    // File transfer (legacy, no session):
+    //   type (1 byte: 0=video, 1=metadata) + name_len:4 + name + size:8 + data
+    // File transfer (session-aware):
+    //   type (1 byte: 10=video, 11=metadata) + uuid:16 + name_len:4 + name + size:8 + data
     
     private func connect(to endpoint: NWEndpoint) {
         // Cancel existing connection if any
@@ -170,12 +173,12 @@ class FileTransferService {
     }
     
     // Send control signal to receiver (for IMU recording start)
-    func sendControlSignal(_ signal: UInt8, timestampNs: UInt64? = nil) {
+    func sendControlSignal(_ signal: UInt8, timestampNs: UInt64? = nil, sessionID: UUID? = nil) {
         guard let conn = connection, conn.state == .ready else {
             print("⚠ Cannot send control signal: connection not ready")
             return
         }
-        
+
         var payload = Data([signal])
         if let timestampNs = timestampNs {
             var beTimestamp = timestampNs.bigEndian
@@ -183,10 +186,17 @@ class FileTransferService {
                 payload.append(contentsOf: bytes)
             }
         }
+        if let sessionID = sessionID {
+            let uuidBytes = sessionID.uuid
+            withUnsafeBytes(of: uuidBytes) { bytes in
+                payload.append(contentsOf: bytes)
+            }
+        }
         let signalName = controlSignalName(signal)
         let tsSuffix = timestampNs.map { " ts_ns=\($0)" } ?? ""
-        print("📡 Sending control signal: \(signalName)\(tsSuffix)")
-        
+        let sidSuffix = sessionID.map { " session=\($0.uuidString)" } ?? ""
+        print("📡 Sending control signal: \(signalName)\(tsSuffix)\(sidSuffix)")
+
         // Send immediately on the transfer queue for minimal delay
         transferQueue.async {
             conn.send(content: payload, completion: .contentProcessed { error in
@@ -205,22 +215,35 @@ class FileTransferService {
             print("📡 IMU start signal already sent in this session, skipping...")
             return
         }
-        
+
+        // Generate session ID on first call; keep the same UUID across reconnects
+        if currentSessionID == nil {
+            currentSessionID = UUID()
+        }
+
         let timestampNs = currentUnixTimeNs()
-        sendControlSignal(startSignalWithTimestamp, timestampNs: timestampNs)
+        sendControlSignal(startSignalWithSession, timestampNs: timestampNs, sessionID: currentSessionID)
         imuStartSignalSent = true
     }
     
     func sendStopRecordingSignal() {
-        sendControlSignal(stopSignal)
+        if let sid = currentSessionID {
+            sendControlSignal(stopSignalWithSession, sessionID: sid)
+        } else {
+            sendControlSignal(stopSignal)
+        }
     }
 
     private func controlSignalName(_ signal: UInt8) -> String {
         switch signal {
         case startSignalLegacy, startSignalWithTimestamp:
             return "START_IMU_RECORDING"
+        case startSignalWithSession:
+            return "START_IMU_RECORDING(session)"
         case stopSignal:
             return "STOP_IMU_RECORDING"
+        case stopSignalWithSession:
+            return "STOP_IMU_RECORDING(session)"
         default:
             return "UNKNOWN(\(signal))"
         }
@@ -237,8 +260,9 @@ class FileTransferService {
         connection?.cancel()
         connection = nil
         isConnected = false
-        // Reset IMU start signal flag when receiver is changed
+        // Reset IMU start signal flag and session when receiver is changed
         imuStartSignalSent = false
+        currentSessionID = nil
         DispatchQueue.main.async {
             self.delegate?.connectionStateChanged(false)
         }
@@ -374,24 +398,29 @@ class FileTransferService {
         
         sendAttempts = 0  // Reset on successful connection check
         print("Connection ready, starting file transfer...")
-        
+
+        // Capture session ID for this transfer batch
+        let sessionID = currentSessionID
+
         transferQueue.async { [weak self] in
             guard let self = self else { return }
-            
+
             // Send video file first
-            self.sendFile(url: videoURL, fileType: 0) { [weak self] success in
+            self.sendFile(url: videoURL, fileType: 0, sessionID: sessionID) { [weak self] success in
                 guard let self = self else { return }
                 if success {
                     DispatchQueue.main.async {
                         self.delegate?.transferProgress(0.5) // 50% after video
                     }
                     // Then send metadata
-                    self.sendFile(url: metadataURL, fileType: 1) { [weak self] success in
+                    self.sendFile(url: metadataURL, fileType: 1, sessionID: sessionID) { [weak self] success in
                         guard let self = self else { return }
                         if success {
                             // Delete files only after BOTH transfers succeed
                             try? FileManager.default.removeItem(at: videoURL)
                             try? FileManager.default.removeItem(at: metadataURL)
+                            // Clear session ID — this recording is fully delivered
+                            self.currentSessionID = nil
                             DispatchQueue.main.async {
                                 self.delegate?.transferProgress(1.0)
                                 self.delegate?.transferCompleted()
@@ -416,44 +445,56 @@ class FileTransferService {
         }
     }
     
-    private func sendFile(url: URL, fileType: UInt8, completion: @escaping (Bool) -> Void) {
+    private func sendFile(url: URL, fileType: UInt8, sessionID: UUID? = nil, completion: @escaping (Bool) -> Void) {
         guard FileManager.default.fileExists(atPath: url.path) else {
             completion(false)
             return
         }
-        
+
         guard let fileData = try? Data(contentsOf: url) else {
             completion(false)
             return
         }
-        
+
         let fileName = url.lastPathComponent
         guard let fileNameData = fileName.data(using: .utf8) else {
             completion(false)
             return
         }
-        
+
         var message = Data()
-        
-        // 1. File type (1 byte)
-        message.append(fileType)
-        
-        // 2. Filename length (4 bytes, big-endian)
+
+        if let sessionID = sessionID {
+            // Session-aware type: 10 = video, 11 = metadata
+            let sessionType: UInt8 = (fileType == 0) ? 10 : 11
+            message.append(sessionType)
+
+            // 16-byte raw UUID
+            let uuidBytes = sessionID.uuid
+            withUnsafeBytes(of: uuidBytes) { bytes in
+                message.append(contentsOf: bytes)
+            }
+        } else {
+            // Legacy type: 0 = video, 1 = metadata
+            message.append(fileType)
+        }
+
+        // Filename length (4 bytes, big-endian)
         var fileNameLength = UInt32(fileNameData.count).bigEndian
         withUnsafeBytes(of: &fileNameLength) { bytes in
             message.append(Data(bytes))
         }
-        
-        // 3. Filename
+
+        // Filename
         message.append(fileNameData)
-        
-        // 4. File size (8 bytes, big-endian)
+
+        // File size (8 bytes, big-endian)
         var fileSize = UInt64(fileData.count).bigEndian
         withUnsafeBytes(of: &fileSize) { bytes in
             message.append(Data(bytes))
         }
-        
-        // 5. File data
+
+        // File data
         message.append(fileData)
         
         print("Sending file: \(fileName) (\(fileData.count) bytes)")

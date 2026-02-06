@@ -129,7 +129,6 @@ class ROSHIReceiver:
                 # Check if it's a control signal
                 if first_byte == 2:
                     print("  📡 Control Signal: START_IMU_RECORDING (signal 2, legacy: no timestamp)")
-                    # Continue to next message
                     continue
                 elif first_byte == 4:
                     ts_data = self._recv_exact(client_socket, 8)
@@ -148,17 +147,45 @@ class ROSHIReceiver:
                     print(f"      sender_utc_ns={sent_ts_ns} ({sent_iso})")
                     print(f"      receiver_utc_ns={recv_ts_ns} ({recv_iso})")
                     print(f"      delta_ms={delta_ms:+.2f} (receiver - sender; clock skew possible)")
-                    # Continue to next message
+                    continue
+                elif first_byte == 5:
+                    # START with timestamp + session UUID: skip 8 + 16 bytes
+                    ts_data = self._recv_exact(client_socket, 8)
+                    if not ts_data:
+                        break
+                    uuid_data = self._recv_exact(client_socket, 16)
+                    if not uuid_data:
+                        break
+                    sent_ts_ns = struct.unpack('>Q', ts_data)[0]
+                    recv_ts_ns = time.time_ns()
+                    delta_ms = (recv_ts_ns - sent_ts_ns) / 1e6
+                    print(f"  📡 Control Signal: START_IMU_RECORDING (signal 5, session UUID, delta={delta_ms:+.2f}ms)")
                     continue
                 elif first_byte == 3:
                     print("  📡 Control Signal: STOP_IMU_RECORDING (signal 3)")
-                    # Continue to next message
                     continue
-                
-                # Otherwise, it's a file type (0 = video, 1 = metadata)
-                file_type = first_byte
-                file_type_name = "video" if file_type == 0 else "metadata"
-                print(f"  Receiving {file_type_name} file...")
+                elif first_byte == 6:
+                    # STOP with session UUID: skip 16 bytes
+                    uuid_data = self._recv_exact(client_socket, 16)
+                    if not uuid_data:
+                        break
+                    print("  📡 Control Signal: STOP_IMU_RECORDING (signal 6, session UUID)")
+                    continue
+
+                # File transfer with session UUID (10 = video, 11 = metadata)
+                if first_byte in (10, 11):
+                    uuid_data = self._recv_exact(client_socket, 16)
+                    if not uuid_data:
+                        break
+                    # Map back to legacy type for the rest of the handler
+                    file_type = 0 if first_byte == 10 else 1
+                    file_type_name = "video" if file_type == 0 else "metadata"
+                    print(f"  Receiving {file_type_name} file (session UUID)...")
+                else:
+                    # Otherwise, it's a file type (0 = video, 1 = metadata)
+                    file_type = first_byte
+                    file_type_name = "video" if file_type == 0 else "metadata"
+                    print(f"  Receiving {file_type_name} file...")
                 
                 # Receive filename length (4 bytes, big-endian)
                 filename_length_data = self._recv_exact(client_socket, 4)
