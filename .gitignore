@@ -27,6 +27,10 @@ received_recordings/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
+
+# Build server config (contains local paths)
+buildServer.json

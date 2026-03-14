@@ -52,8 +52,9 @@ cd RoSHI-App
 ### 2. Build the iOS app
 
 1. Open `ROSHI.xcodeproj` in Xcode.
-2. Select your target device (iPhone or iPad).
-3. Build and run (Cmd+R).
+2. In **Signing & Capabilities**, select your Apple Development Team.
+3. Select your target device (iPhone or iPad).
+4. Build and run (Cmd+R).
 
 No external Swift packages or CocoaPods are needed — the AprilTag library is vendored as C source.
 
@@ -164,6 +165,8 @@ ROSHI/
 - [RoSHI](https://github.com/Jirl-upenn/RoSHI) — Main project: whole-body IMU motion capture pipeline
 
 ## License
+
+MIT License. See [LICENSE](LICENSE) for details.
 
 This project is part of the RoSHI system developed at the [JIRL Lab](https://github.com/Jirl-upenn), University of Pennsylvania.
 
