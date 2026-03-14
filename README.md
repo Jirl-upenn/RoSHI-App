@@ -2,9 +2,6 @@
 
 An iOS app for calibrating the [RoSHI](https://github.com/Jirl-upenn/RoSHI) whole-body motion capture system. It captures RGB video with real-time AprilTag detection and synchronizes with 9 body-mounted IMU sensors over LAN to estimate bone-to-sensor orientation offsets.
 
-<!-- TODO: Add a screenshot or demo GIF here -->
-<!-- ![Demo](assets/demo.gif) -->
-
 ## Features
 
 - Real-time AprilTag detection (Tag36h11) with 3D pose overlay
@@ -24,17 +21,19 @@ An iOS app for calibrating the [RoSHI](https://github.com/Jirl-upenn/RoSHI) whol
 
 ### Tag Placement
 
-| Tag ID | Body Location |
-|--------|---------------|
-| 0 | Pelvis |
-| 1 | Left Shoulder |
-| 2 | Right Shoulder |
-| 3 | Left Elbow |
-| 4 | Right Elbow |
-| 5 | Left Hip |
-| 6 | Right Hip |
-| 7 | Left Knee |
-| 8 | Right Knee |
+
+| Tag ID | Body Location  |
+| ------ | -------------- |
+| 0      | Pelvis         |
+| 1      | Left Shoulder  |
+| 2      | Right Shoulder |
+| 3      | Left Elbow     |
+| 4      | Right Elbow    |
+| 5      | Left Hip       |
+| 6      | Right Hip      |
+| 7      | Left Knee      |
+| 8      | Right Knee     |
+
 
 ### Software
 
@@ -87,13 +86,15 @@ python3 receiver.py --output-dir ~/roshi_data      # custom output directory
 
 ### App Settings
 
-| Setting | Options | Default |
-|---------|---------|---------|
-| Resolution | 720p / 1080p | 720p |
-| FPS | 10 / 15 / 20 / 30 | 30 |
-| Target detections per tag | 50 / 100 / 200 | 100 |
-| Zoom | 1×–5× | 1× |
-| Camera | Front / Back | Back |
+
+| Setting                   | Options           | Default |
+| ------------------------- | ----------------- | ------- |
+| Resolution                | 720p / 1080p      | 720p    |
+| FPS                       | 10 / 15 / 20 / 30 | 30      |
+| Target detections per tag | 50 / 100 / 200    | 100     |
+| Zoom                      | 1×–5×             | 1×      |
+| Camera                    | Front / Back      | Back    |
+
 
 ## Output Format
 
@@ -149,12 +150,14 @@ ROSHI/
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Receiver not found | Ensure both devices are on the same Wi-Fi network. Check firewall settings. |
-| Connection timeout | Verify the port is not blocked. Try entering IP/port manually in app settings. |
-| Tags not detected | Ensure tags are printed at 42 mm size, flat, and well-lit. Avoid motion blur. |
-| Low detection count | Move slowly, keep tags facing the camera, increase recording duration. |
+
+| Issue               | Solution                                                                       |
+| ------------------- | ------------------------------------------------------------------------------ |
+| Receiver not found  | Ensure both devices are on the same Wi-Fi network. Check firewall settings.    |
+| Connection timeout  | Verify the port is not blocked. Try entering IP/port manually in app settings. |
+| Tags not detected   | Ensure tags are printed at 42 mm size, flat, and well-lit. Avoid motion blur.  |
+| Low detection count | Move slowly, keep tags facing the camera, increase recording duration.         |
+
 
 ## Related
 
@@ -164,4 +167,3 @@ ROSHI/
 
 This project is part of the RoSHI system developed at the [JIRL Lab](https://github.com/Jirl-upenn), University of Pennsylvania.
 
-<!-- TODO: Add license (e.g., MIT, Apache 2.0) -->
