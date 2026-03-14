@@ -1,15 +1,6 @@
-<p align="center">
-  <a href="https://roshi-mocap.github.io/">
-    <img src="https://roshi-mocap.github.io/static/img/roshi.png" alt="RoSHI Logo" width="200">
-  </a>
-</p>
+# <img src="https://roshi-mocap.github.io/static/img/roshi.png" alt="RoSHI Logo" height="32"> RoSHI-App
 
-<h1 align="center">RoSHI-App</h1>
-
-<p align="center">
-  <a href="https://roshi-mocap.github.io/">Project Page</a> &bull;
-  <a href="https://github.com/Jirl-upenn/RoSHI">Main Repository</a>
-</p>
+[Project Page](https://roshi-mocap.github.io/) | [Main Repository](https://github.com/Jirl-upenn/RoSHI)
 
 An iOS app for calibrating the [RoSHI](https://roshi-mocap.github.io/) whole-body motion capture system. It captures RGB video with real-time AprilTag detection and synchronizes with 9 body-mounted IMU sensors over LAN to estimate bone-to-sensor orientation offsets.
 
