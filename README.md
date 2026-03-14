@@ -38,7 +38,7 @@ An iOS app for calibrating the [RoSHI](https://github.com/Jirl-upenn/RoSHI) whol
 ### Software
 
 - **Xcode 15+** with Swift 5.0
-- **Python 3.7+** (for the receiver)
+- The receiver script from the [main RoSHI repository](https://github.com/Jirl-upenn/RoSHI)
 
 ## Getting Started
 
@@ -60,21 +60,9 @@ No external Swift packages or CocoaPods are needed — the AprilTag library is v
 
 ### 3. Set up the receiver
 
-On your computer (must be on the same Wi-Fi network as the iOS device):
+The receiver script is part of the [main RoSHI repository](https://github.com/Jirl-upenn/RoSHI). See its README for setup instructions.
 
-```bash
-pip install -r requirements.txt
-python3 receiver.py
-```
-
-The receiver will advertise itself via Bonjour. The app should discover it automatically, or you can enter the IP and port manually in the app's Receiver Settings.
-
-**Options:**
-
-```bash
-python3 receiver.py --port 8080                    # custom port (default: 50000)
-python3 receiver.py --output-dir ~/roshi_data      # custom output directory
-```
+The receiver advertises itself via Bonjour. The app should discover it automatically, or you can enter the IP and port manually in the app's Receiver Settings.
 
 ## Usage
 
