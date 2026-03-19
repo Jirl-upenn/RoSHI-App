@@ -1,6 +1,6 @@
 # <img src="https://roshi-mocap.github.io/static/img/roshi.png" alt="RoSHI Logo" height="32"> RoSHI-App
 
-[Project Page](https://roshi-mocap.github.io/) | [Documentation](https://roshi-mocap.github.io/documentation/) | [Main Repository](https://github.com/Jirl-upenn/RoSHI)
+[Project Page](https://roshi-mocap.github.io/) | [Documentation](https://roshi-mocap.github.io/documentation/) | [Main Repository](https://github.com/Jirl-upenn/RoSHI-MoCap)
 
 An iOS app for calibrating the [RoSHI](https://roshi-mocap.github.io/) whole-body motion capture system. It captures RGB video with real-time AprilTag detection and synchronizes with 9 body-mounted IMU sensors over LAN to estimate bone-to-sensor orientation offsets.
 
@@ -8,13 +8,13 @@ An iOS app for calibrating the [RoSHI](https://roshi-mocap.github.io/) whole-bod
 
 - Real-time AprilTag detection (Tag36h11) with 3D pose overlay
 - Video recording with per-frame UTC timestamps and camera intrinsics
-- Automatic LAN receiver discovery via Bonjour/mDNS
+- LAN receiver connection with configurable IP and port
 
 ## Requirements
 
 - iPhone or iPad running **iOS 17.6+**
 - **Xcode 15+** with Swift 5.0
-- A RoSHI receiver running on the same LAN from the [main RoSHI repository](https://github.com/Jirl-upenn/RoSHI)
+- A RoSHI receiver running on the same LAN from the [main RoSHI-MoCap repository](https://github.com/Jirl-upenn/RoSHI-MoCap)
 
 ## Quick Start
 
@@ -30,15 +30,15 @@ cd RoSHI-App
 
 No external Swift packages or CocoaPods are needed; the AprilTag library is vendored as C source.
 
-Start the receiver from the main RoSHI repository on a computer connected to the same network:
+Start the receiver from the main RoSHI-MoCap repository on a computer connected to the same network:
 
 ```bash
-git clone git@github.com:Jirl-upenn/RoSHI.git
-cd RoSHI
+git clone git@github.com:Jirl-upenn/RoSHI-MoCap.git
+cd RoSHI-MoCap
 python 01_receiver.py --output-dir received_recordings
 ```
 
-The app should discover the receiver automatically via Bonjour/mDNS. If needed, you can enter the receiver IP and port manually in the app settings.
+Start the receiver on the same network as the iOS device, then enter the IP address and port shown in the receiver terminal in the app settings.
 
 ## Documentation
 
