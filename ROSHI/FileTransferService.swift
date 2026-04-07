@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 enum TransferError: Error {
     case noReceiverFound
@@ -40,6 +41,9 @@ class FileTransferService {
     // We run a tiny receive loop to detect remote FIN/RST and update UI promptly.
     private var activeConnectionToken = UUID()
     private var receiveLoopStartedForToken: UUID?
+
+    // Background task to keep file transfers alive when app is backgrounded
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     
     // Direct connection
     var receiverHost: String = ""
@@ -284,9 +288,16 @@ class FileTransferService {
         }
     }
     
-    private func stopConnectionChecks() {
+    func stopConnectionChecks() {
         connectionCheckTimer?.invalidate()
         connectionCheckTimer = nil
+    }
+
+    func resumeConnectionChecks() {
+        guard !receiverHost.isEmpty else { return }
+        // Immediately check once, then restart the periodic timer
+        checkConnection()
+        startConnectionChecks()
     }
     
     private func checkConnection() {
@@ -362,7 +373,25 @@ class FileTransferService {
         }
     }
     
+    private func beginBackgroundTransferTask() {
+        guard backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "FileTransfer") { [weak self] in
+            // System is about to expire the task — clean up
+            print("⚠ Background transfer time expired")
+            self?.endBackgroundTransferTask()
+        }
+    }
+
+    private func endBackgroundTransferTask() {
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
+    }
+
     func sendFiles(videoURL: URL, metadataURL: URL) {
+        // Request background execution time so transfer survives app switching
+        beginBackgroundTransferTask()
+
         // Reset attempts if we have a ready connection
         if connection?.state == .ready {
             sendAttempts = 0
@@ -373,15 +402,17 @@ class FileTransferService {
                 print("✗ Max connection attempts reached")
                 print("Files kept locally: \(videoURL.lastPathComponent)")
                 delegate?.transferFailed(TransferError.connectionFailed)
+                endBackgroundTransferTask()
                 return
             }
         }
-        
+
         // Ensure we have a receiver configured
         guard !receiverHost.isEmpty else {
             print("✗ No receiver configured")
             print("Files kept locally: \(videoURL.lastPathComponent)")
             delegate?.transferFailed(TransferError.connectionFailed)
+            endBackgroundTransferTask()
             return
         }
         
@@ -425,12 +456,14 @@ class FileTransferService {
                                 self.delegate?.transferProgress(1.0)
                                 self.delegate?.transferCompleted()
                             }
+                            self.endBackgroundTransferTask()
                             print("✓ Transfer complete. Files deleted: \(videoURL.lastPathComponent)")
                         } else {
                             // Keep files locally on metadata transfer failure
                             DispatchQueue.main.async {
                                 self.delegate?.transferFailed(TransferError.sendFailed)
                             }
+                            self.endBackgroundTransferTask()
                             print("✗ Metadata transfer failed. Files kept locally: \(videoURL.lastPathComponent)")
                         }
                     }
@@ -440,6 +473,7 @@ class FileTransferService {
                     DispatchQueue.main.async {
                         self.delegate?.transferFailed(TransferError.sendFailed)
                     }
+                    self.endBackgroundTransferTask()
                 }
             }
         }

@@ -144,6 +144,20 @@ class CameraManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         }
     }
     
+    func pauseSession() {
+        if session.isRunning {
+            session.stopRunning()
+        }
+    }
+
+    func resumeSession() {
+        if !session.isRunning {
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.session.startRunning()
+            }
+        }
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         delegate?.didOutput(sampleBuffer: sampleBuffer)
     }

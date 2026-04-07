@@ -7,6 +7,7 @@ import simd
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var zoomLevel: CGFloat = 1.0
     
     // UI State for buttons
@@ -303,6 +304,34 @@ struct ContentView: View {
                 }
                 .padding(.bottom, 40)
             }
+
+            // Full-screen transfer overlay — blocks interaction until complete
+            if model.isTransferring {
+                Color.black.opacity(0.7)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 20) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+
+                    Text("Transferring files...")
+                        .font(.title2.bold())
+                        .foregroundColor(.white)
+
+                    ProgressView(value: model.transferProgress)
+                        .progressViewStyle(LinearProgressViewStyle(tint: .green))
+                        .frame(width: 200)
+
+                    Text("\(Int(model.transferProgress * 100))%")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.8))
+
+                    Text("Please do not leave the app")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
         }
         .onAppear {
             model.cameraManager.start()
@@ -312,6 +341,16 @@ struct ContentView: View {
         .onDisappear {
             // Re-enable idle timer when view disappears
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .background:
+                model.handleAppBackgrounded()
+            case .active:
+                model.handleAppForegrounded()
+            default:
+                break
+            }
         }
         .sheet(isPresented: $model.showReceiverSettings) {
             ReceiverSettingsView(model: model)
@@ -504,6 +543,26 @@ class AppModel: ObservableObject, CameraManagerDelegate, FileTransferServiceDele
         fileTransferService.setReceiver(host: "10.103.76.0", port: 50000)
     }
     
+    // MARK: - App Lifecycle
+
+    func handleAppBackgrounded() {
+        // If recording, force stop to prevent data corruption
+        if isRecording {
+            print("App backgrounded during recording — force stopping")
+            stopRecording()
+        }
+        cameraManager.pauseSession()
+        // Don't stop connection checks if we're transferring files
+        if !isTransferring {
+            fileTransferService.stopConnectionChecks()
+        }
+    }
+
+    func handleAppForegrounded() {
+        cameraManager.resumeSession()
+        fileTransferService.resumeConnectionChecks()
+    }
+
     func switchCamera() {
         cameraManager.switchCameraPos()
         DispatchQueue.main.async { self.isFront = self.cameraManager.isFront }
